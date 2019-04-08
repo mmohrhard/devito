@@ -71,7 +71,7 @@ configuration.add('ignore-unknowns', 0, [0, 1], preprocessor=bool, impacts_jit=F
 
 # Setup log level
 configuration.add('log-level', 'INFO', list(logger_registry),
-                  callback=_set_log_level, impacts_jit=False)
+                  callback=lambda i: i, impacts_jit=False)
 
 # Escape hatch for custom kernels. The typical use case is as follows: one lets
 # Devito generate code for an Operator; then, once the session is over, the
