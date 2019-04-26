@@ -86,15 +86,12 @@ def test_mode_runtime_backward():
 def test_mode_destructive():
     """Test autotuning in destructive mode."""
     grid = Grid(shape=(96, 96, 96))
-    f = TimeFunction(name='f', grid=grid, time_order=0)
+    f = TimeFunction(name='f', grid=grid)
 
-    op = Operator(Eq(f, f + 1.), openmp=False)
+    op = Operator(Eq(f.forward, f + 1.), openmp=False)
     op.apply(time=100, autotune=('basic', 'destructive'))
 
-    # AT is expected to have executed 30 timesteps (6 block shapes, 5 timesteps each)
-    # The operator runs for 101 timesteps
-    # So, overall, f.data[0] is incremented 131 times
-    assert np.all(f.data == 131)
+    assert np.all(f.data[1, :] == 125)
 
 
 def test_blocking_only():
