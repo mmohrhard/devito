@@ -239,13 +239,13 @@ def test_multiple_blocking():
 
     # 'basic' mode
     op.apply(time_M=0, autotune='basic')
-    assert op._state['autotuning'][0]['runs'] == 12  # 6 for each Iteration nest
+    assert op._state['autotuning'][0]['runs'] == 18  # 6 for each Iteration nest
     assert op._state['autotuning'][0]['tpr'] == options['squeezer'] + 1
     assert len(op._state['autotuning'][0]['tuned']) == 4
 
     # 'aggressive' mode
     op.apply(time_M=0, autotune='aggressive')
-    assert op._state['autotuning'][1]['runs'] == 60
+    assert op._state['autotuning'][1]['runs'] == 90
     assert op._state['autotuning'][1]['tpr'] == options['squeezer'] + 1
     assert len(op._state['autotuning'][1]['tuned']) == 4
 
@@ -254,7 +254,7 @@ def test_multiple_blocking():
     op = Operator([Eq(u.forward, u + 1), Eq(v.forward, u.forward.dx2 + v + 1)],
                   opt=('blocking', {'openmp': True}))
     op.apply(time_M=0, autotune='basic')
-    assert op._state['autotuning'][0]['runs'] == 12
+    assert op._state['autotuning'][0]['runs'] == 18
     assert op._state['autotuning'][0]['tpr'] == options['squeezer'] + 1
     assert len(op._state['autotuning'][0]['tuned']) == 5
 

@@ -89,6 +89,8 @@ def autotune(operator, args, level, mode):
     at_args.update(timer._arg_values())
 
     # Perform autotuning
+    best = {}
+    runs = 0
     timings = {}
     seen = set()
     for n, tree in enumerate(trees):
@@ -137,26 +139,25 @@ def autotune(operator, args, level, mode):
             update_time_bounds(stepper, at_args, timesteps, mode)
             timer.reset()
 
-    # The best variant is the one that for a given number of threads had the minium
-    # turnaround time
-    try:
-        runs = 0
-        mapper = {}
-        for k, v in timings.items():
-            for i in v.values():
-                runs += len(i)
-                record = mapper.setdefault(k, Record())
-                record.add(min(i, key=i.get), min(i.values()))
-        best = min(mapper, key=mapper.get)
-        best = OrderedDict(best + tuple(mapper[best].args))
-        best.pop(None, None)
-        log("selected <%s>" % (','.join('%s=%s' % i for i in best.items())))
-    except ValueError:
-        warning("could not perform any runs")
-        return args, {}
+        # The best variant is the one that for a given number of threads had the minium
+        # turnaround time
+        try:
+            mapper = {}
+            for k, v in timings.items():
+                for i in v.values():
+                    runs += len(i)
+                    record = mapper.setdefault(k, Record())
+                    record.add(min(i, key=i.get), min(i.values()))
+            best = min(mapper, key=mapper.get)
+            best = OrderedDict(best + tuple(mapper[best].args))
+            best.pop(None, None)
+            log("selected <%s>" % (','.join('%s=%s' % i for i in best.items())))
+        except ValueError:
+            warning("could not perform any runs")
+            return args, {}
 
-    # Update the argument list with the tuned arguments
-    args.update(best)
+        # Update the argument list with the tuned arguments so far
+        args.update(best)
 
     # In `runtime` mode, some timesteps have been executed already, so we must
     # adjust the time range
