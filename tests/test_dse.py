@@ -243,7 +243,7 @@ def test_time_dependent_split(opt, expected):
 
     trees = retrieve_iteration_tree(op)
     assert len(trees) == expected
-
+    import pdb;pdb.set_trace()
     op()
 
     
@@ -1295,7 +1295,7 @@ class TestAliases(object):
                                               'cire-mincost-inv': 28}))
 
         trees = retrieve_iteration_tree(op)
-        import pdb;pdb.set_trace()
+        #import pdb;
         assert len(trees) == 2
         arrays = [i for i in FindSymbols().visit(trees[0].root) if i.is_Array]
         assert len(arrays) == 2
