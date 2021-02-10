@@ -566,7 +566,7 @@ class TestNodeParallelism(object):
         u = TimeFunction(name='u', grid=grid)
 
         op = Operator(Inc(f, u + 1), opt=('openmp', {'par-collapse-ncores': 1}))
-
+        import pdb;pdb.set_trace()
         iterations = FindNodes(Iteration).visit(op)
         assert "reduction(+:f[0:f_vec->size[0]])" in iterations[1].pragmas[0].value
 

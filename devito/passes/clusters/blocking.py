@@ -33,12 +33,18 @@ class Blocking(Queue):
             # import pdb;pdb.set_trace()
             ntilable = len([i for i in c.properties.values() if TILABLE in i])
             ntilable -= int(not self.inner)
+            import pdb;pdb.set_trace()
 
             #if ntilable == 1: # and not self.inner:
             #    properties = {k: v for k, v in c.properties.items()}
             #    processed.append(c.rebuild(properties=properties))
             if ntilable < 1:
                 properties = {k: v - {TILABLE} for k, v in c.properties.items()}
+                processed.append(c.rebuild(properties=properties))
+            elif ntilable == 1 and not self.inner:
+                d = c.itintervals[-1].dim
+                properties = dict(c.properties)
+                properties[d] = properties[d] - {TILABLE}
                 processed.append(c.rebuild(properties=properties))
             elif not self.inner:
                 #import pdb;pdb.set_trace()
@@ -47,7 +53,6 @@ class Blocking(Queue):
                 properties[d] = properties[d] - {TILABLE}
                 processed.append(c.rebuild(properties=properties))
             elif ntilable==1 and self.inner:
-                #import pdb;pdb.set_trace()
                 d = c.itintervals[-1].dim
                 properties = dict(c.properties)
                 properties[d] = properties[d] - {TILABLE}
