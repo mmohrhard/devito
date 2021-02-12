@@ -48,6 +48,7 @@ class Cluster(object):
 
         properties = dict(properties or {})
         properties.update({i.dim: properties.get(i.dim, set()) for i in ispace.intervals})
+        print(properties)
         self._properties = frozendict(properties)
 
     def __repr__(self):

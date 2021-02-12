@@ -9,6 +9,7 @@ from devito.ir.support import IterationSpace
 from devito.ir.support.space import Interval
 from devito.ir.clusters.cluster import Cluster
 from devito.symbolics import uxreplace, xreplace_indices
+from devito.logger import warning
 
 __all__ = ['skewing']
 
@@ -44,44 +45,53 @@ def skewing(cluster, *args):
     """
     processed = []
     
-    
     itintervals = cluster.ispace.itintervals 
     itdimensions = cluster.ispace.itdimensions
     sub_iterators = cluster.ispace.sub_iterators
     directions = cluster.ispace.directions
-
-        
+    
     skew_dims = {i.dim for i in cluster.ispace.intervals if i.dim.is_Time}
+    root_names = {i.dim.root.name for i in cluster.ispace.intervals if not i.dim.is_Time}
+    import pdb;pdb.set_trace()
+
+    # Remove candidates
+    
+    mapper, intervals = {}, []
+    passed = []
+
     try:
         skew_dim = skew_dims.pop()
+        intervals.append(Interval(skew_dim, 0, 0))
+        skew_dim = skew_dim
+        index = intervals.index(Interval(skew_dim, 0, 0))
+        passed.append(skew_dim)
     except KeyError:
         # No time dimensions -> nothing to do
         return cluster
+    
     if len(skew_dims) > 0:
-        raise ValueError("More than 1 time dimensions. Aborting tt...")
+        raise warning("More than 1 time dimensions. Avoid skewing")
+        return cluster
 
-    mapper, intervals = {}, []
-
+    # import pdb;pdb.set_trace()
     # Initializing a default time_dim index position in loop
     index = 0
     # Skew dim will not be none here:
-    for i in cluster.ispace.itintervals:
-        import pdb;pdb.set_trace()
-        if i.dim.is_Time:
-            intervals.append(Interval(i.dim, 0, 0))
-            skew_dim = i.dim
-            index = intervals.index(Interval(i.dim, 0, 0))
-        elif index < cluster.ispace.itintervals.index(i):
-            mapper[i.dim] = i.dim - skew_dim
-            intervals.append(Interval(i.dim, skew_dim, skew_dim))
-        else:
-            intervals.append(i)
+    
+    for i in reversed(cluster.ispace.itintervals):
+        if i.dim not in passed:
+            if index < cluster.ispace.itintervals.index(i) and i.dim.root.name in root_names:
+                mapper[i.dim] = i.dim - skew_dim
+                intervals.append(Interval(i.dim, skew_dim, skew_dim))
+                root_names.remove(i.dim.root)
+            else:
+                intervals.append(Interval(i.dim, 0, 0))
 
-    processed = xreplace_indices(cluster.exprs, mapper)
+        processed = xreplace_indices(cluster.exprs, mapper)
 
     ispace = IterationSpace(intervals, sub_iterators, directions)
     cluster = Cluster(processed, ispace, cluster.dspace, guards=cluster.guards)
-
+    
     return cluster.rebuild(processed)
 
 

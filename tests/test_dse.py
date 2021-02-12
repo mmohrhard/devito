@@ -243,7 +243,6 @@ def test_time_dependent_split(opt, expected):
 
     trees = retrieve_iteration_tree(op)
     assert len(trees) == expected
-    import pdb;pdb.set_trace()
     op()
 
     

@@ -177,8 +177,8 @@ class Tiling(Detector):
         # TILABLE a Dimension that is not embedded in at least one
         # SEQUENTIAL Dimension. This is to rule out tiling when the
         # computation is not expected to be expensive
-        #if not any(SEQUENTIAL in properties[i.dim] for i in prefix[:-1]):
-        #    return
+        if not any(SEQUENTIAL in properties[i.dim] for i in prefix[:-1]):
+            return
 
         # Likewise, it won't be marked TILABLE if there's at least one
         # local SubDimension in all Clusters

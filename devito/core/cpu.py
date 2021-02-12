@@ -180,7 +180,6 @@ class Cpu64AdvOperator(Cpu64OperatorMixin, CoreOperator):
         clusters = Blocking(options).process(clusters)
 
         # Reduce flops (potential arithmetic alterations)
-        import pdb;pdb.set_trace()
         clusters = extract_increments(clusters, sregistry)
         clusters = cire(clusters, 'sops', sregistry, options, platform)
         clusters = factorize(clusters)
@@ -194,9 +193,10 @@ class Cpu64AdvOperator(Cpu64OperatorMixin, CoreOperator):
         # Reduce flops (no arithmetic alterations)
         clusters = cse(clusters, sregistry)
 
-        #import pdb;pdb.set_trace()
+
+        # Apply skewing after blocking
         clusters = skewing(clusters)
-        # clusters = factorize(clusters)
+        
         return clusters
 
     @classmethod
