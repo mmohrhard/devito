@@ -28,7 +28,6 @@ class Blocking(Queue):
     def process(self, clusters):
         # Preprocess: heuristic: drop TILABLE from innermost Dimensions to
         # maximize vectorization
-        import pdb;pdb.set_trace()
         processed = []
         for c in clusters:
             
@@ -114,7 +113,6 @@ def decompose(ispace, d, block_dims):
     """
     
     # Create the new Intervals
-    import pdb;pdb.set_trace()
     intervals = []
     for i in ispace:
         if i.dim is d:
@@ -152,7 +150,6 @@ def decompose(ispace, d, block_dims):
             for bd in block_dims:
                 relations.append([bd, i.dim])
 
-    import pdb;pdb.set_trace()
     intervals = IntervalGroup(intervals, relations=relations)
 
     sub_iterators = dict(ispace.sub_iterators)

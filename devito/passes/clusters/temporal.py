@@ -50,9 +50,9 @@ def skewing(cluster, *args):
     sub_iterators = cluster.ispace.sub_iterators
     directions = cluster.ispace.directions
     
+
     skew_dims = {i.dim for i in cluster.ispace.intervals if i.dim.is_Time}
     root_names = {i.dim.root.name for i in cluster.ispace.intervals if not i.dim.is_Time}
-    import pdb;pdb.set_trace()
 
     # Remove candidates
     
@@ -62,7 +62,6 @@ def skewing(cluster, *args):
     try:
         skew_dim = skew_dims.pop()
         intervals.append(Interval(skew_dim, 0, 0))
-        skew_dim = skew_dim
         index = intervals.index(Interval(skew_dim, 0, 0))
         passed.append(skew_dim)
     except KeyError:
@@ -73,25 +72,27 @@ def skewing(cluster, *args):
         raise warning("More than 1 time dimensions. Avoid skewing")
         return cluster
 
-    # import pdb;pdb.set_trace()
     # Initializing a default time_dim index position in loop
     index = 0
     # Skew dim will not be none here:
     
-    for i in reversed(cluster.ispace.itintervals):
+    for i in cluster.ispace.itintervals:
         if i.dim not in passed:
-            if index < cluster.ispace.itintervals.index(i) and i.dim.root.name in root_names:
+            if index < cluster.ispace.itintervals.index(i) and i.dim.name in root_names:
                 mapper[i.dim] = i.dim - skew_dim
                 intervals.append(Interval(i.dim, skew_dim, skew_dim))
-                root_names.remove(i.dim.root)
+                root_names.remove(i.dim.root.name)
             else:
                 intervals.append(Interval(i.dim, 0, 0))
 
         processed = xreplace_indices(cluster.exprs, mapper)
 
     ispace = IterationSpace(intervals, sub_iterators, directions)
-    cluster = Cluster(processed, ispace, cluster.dspace, guards=cluster.guards)
-    
+    cluster = Cluster(processed, ispace, cluster.dspace, guards=cluster.guards, properties=cluster.properties)
+
+    print(ispace)    
+
+    print(mapper)    
     return cluster.rebuild(processed)
 
 

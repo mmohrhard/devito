@@ -195,8 +195,9 @@ class Cpu64AdvOperator(Cpu64OperatorMixin, CoreOperator):
 
 
         # Apply skewing after blocking
+        print(clusters[0].properties)
         clusters = skewing(clusters)
-        
+        print(clusters[0].properties)
         return clusters
 
     @classmethod
