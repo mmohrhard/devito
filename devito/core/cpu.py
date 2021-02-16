@@ -197,7 +197,7 @@ class Cpu64AdvOperator(Cpu64OperatorMixin, CoreOperator):
         # Apply skewing after blocking
         print(clusters[0].properties)
         #import pdb;pdb.set_trace()
-        # clusters = skewing(clusters)
+        clusters = skewing(clusters)
         print(clusters[0].properties)
         return clusters
 
