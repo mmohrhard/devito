@@ -5,19 +5,13 @@ from sympy import Add, Mul, collect
 from devito.passes.clusters.utils import cluster_pass
 from devito.symbolics import estimate_cost, retrieve_scalars
 from devito.tools import ReducerMap
-from devito.ir.support import IterationSpace
+from devito.ir.support import IterationSpace, SEQUENTIAL
 from devito.ir.support.space import Interval
 from devito.ir.clusters.cluster import Cluster
 from devito.symbolics import uxreplace, xreplace_indices
 from devito.logger import warning
 
 __all__ = ['skewing']
-
-
-"""
-Minimum operation count of an expression so that aggressive factorization
-is applied.
-"""
 
 
 @cluster_pass
@@ -44,14 +38,19 @@ def skewing(cluster, *args):
     end for
     """
     processed = []
-    
-    itintervals = cluster.ispace.itintervals 
-    itdimensions = cluster.ispace.itdimensions
-    sub_iterators = cluster.ispace.sub_iterators
-    directions = cluster.ispace.directions
+
+    # What dimensions so we target?
+    # 0) all sequential Dimensions
+
+    skew_dims = []
+   
+    for i in cluster.ispace:
+        if SEQUENTIAL in cluster.properties[i.dim]:
+            skew_dims.append(i.dim)
+            
+    # = {i.dim for i in cluster.ispace if i.dim.is_Time}
     
 
-    skew_dims = {i.dim for i in cluster.ispace.intervals if i.dim.is_Time}
     root_names = {i.dim.root.name for i in cluster.ispace.intervals if not i.dim.is_Time}
 
     # Remove candidates
@@ -60,11 +59,12 @@ def skewing(cluster, *args):
     passed = []
 
     try:
+        import pdb;pdb.set_trace()
         skew_dim = skew_dims.pop()
         intervals.append(Interval(skew_dim, 0, 0))
         index = intervals.index(Interval(skew_dim, 0, 0))
         passed.append(skew_dim)
-    except KeyError:
+    except IndexError:
         # No time dimensions -> nothing to do
         return cluster
     
@@ -76,9 +76,9 @@ def skewing(cluster, *args):
     index = 0
     # Skew dim will not be none here:
     
-    for i in cluster.ispace.itintervals:
+    for i in cluster.ispace.intervals:
         if i.dim not in passed:
-            if index < cluster.ispace.itintervals.index(i) and i.dim.name in root_names:
+            if index < cluster.ispace.intervals.index(i) and i.dim.name in root_names:
                 mapper[i.dim] = i.dim - skew_dim
                 intervals.append(Interval(i.dim, skew_dim, skew_dim))
                 root_names.remove(i.dim.root.name)
@@ -87,7 +87,7 @@ def skewing(cluster, *args):
 
         processed = xreplace_indices(cluster.exprs, mapper)
 
-    ispace = IterationSpace(intervals, sub_iterators, directions)
+    ispace = IterationSpace(intervals, cluster.ispace.sub_iterators, cluster.ispace.directions)
     cluster = Cluster(processed, ispace, cluster.dspace, guards=cluster.guards, properties=cluster.properties)
 
     print(ispace)    
