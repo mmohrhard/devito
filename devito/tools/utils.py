@@ -193,7 +193,8 @@ def dtype_to_cstr(dtype):
 
 def dtype_to_ctype(dtype):
     """Translate numpy.dtype into a ctypes type."""
-    return {np.int32: ctypes.c_int,
+    return {np.int8: ctypes.c_char,
+            np.int32: ctypes.c_int,
             np.float32: ctypes.c_float,
             np.int64: ctypes.c_int64,
             np.float64: ctypes.c_double}[dtype]
