@@ -7,7 +7,6 @@ import sys
 
 import numpy as np
 import ctypes
-from ctypes.util import find_library
 
 from devito.logger import logger
 from devito.parameters import configuration
@@ -128,7 +127,7 @@ class PosixAllocator(MemoryAllocator):
 
     @classmethod
     def initialize(cls):
-        handle = find_library('c')
+        handle = 'libc.so.6'
 
         # Special case: on MacOS Big Sur any code that attempts to check
         # for dynamic library presence by looking for a file at a path
@@ -251,9 +250,7 @@ class NumaAllocator(MemoryAllocator):
 
     @classmethod
     def initialize(cls):
-        handle = find_library('numa')
-        if handle is None:
-            return
+        handle = 'libnuma.so.1'
         lib = ctypes.CDLL(handle)
         if lib.numa_available() == -1:
             return
