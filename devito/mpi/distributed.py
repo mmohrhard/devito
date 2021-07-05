@@ -356,6 +356,8 @@ class Distributor(AbstractDistributor):
               useful to retrieve the diagonal neighbours (e.g., ``M[(LEFT, LEFT)]``
               gives the top-left neighbour in a 2D grid).
         """
+        assert isinstance(self.comm, MPI.Cartcomm)
+
         # Set up horizontal neighbours
         shifts = {d: self.comm.Shift(i, 1) for i, d in enumerate(self.dimensions)}
         ret = {}
