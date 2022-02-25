@@ -3,6 +3,7 @@ from ctypes import POINTER, Structure, c_int, c_ulong, c_void_p, cast, byref
 from functools import wraps, reduce
 from math import ceil
 from operator import mul
+from time import monotonic
 
 import numpy as np
 import sympy
@@ -13,7 +14,7 @@ from devito.builtins import assign
 from devito.data import (DOMAIN, OWNED, HALO, NOPAD, FULL, LEFT, CENTER, RIGHT,
                          Data, default_allocator)
 from devito.exceptions import InvalidArgument
-from devito.logger import debug, warning
+from devito.logger import debug, warning, info
 from devito.mpi import MPI
 from devito.parameters import configuration
 from devito.symbolics import FieldFromPointer
@@ -774,11 +775,16 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         neighborhood = self._distributor.neighborhood
         comm = self._distributor.comm
 
+        start = monotonic()
+        did_transfer = False
+
         for d in self._dist_dimensions:
             for i in [LEFT, RIGHT]:
                 # Get involved peers
                 dest = neighborhood[d][i]
                 source = neighborhood[d][i.flip()]
+
+                info("(halo exchange of %s) %s -> %s", str(self), source, dest)
 
                 # Gather send data
                 data = self._data_in_region(OWNED, d, i)
@@ -786,14 +792,28 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
 
                 # Setup recv buffer
                 shape = self._data_in_region(HALO, d, i.flip()).shape
-                recvbuf = np.ndarray(shape=shape, dtype=self.dtype)
+                recvbuf = np.empty(shape=shape, dtype=self.dtype)
 
                 # Communication
                 comm.Sendrecv(sendbuf, dest=dest, recvbuf=recvbuf, source=source)
 
                 # Scatter received data
-                if recvbuf is not None and source != MPI.PROC_NULL:
+                if source != MPI.PROC_NULL:
                     self._data_in_region(HALO, d, i.flip())[:] = recvbuf
+
+                if source != MPI.PROC_NULL and recvbuf.size > 0:
+                    did_transfer = True
+                if dest != MPI.PROC_NULL and sendbuf.size > 0:
+                    did_transfer = True
+
+        if did_transfer:
+            end = monotonic()
+            warning(
+                "pythonland halo exchange for %s! (global shape %s) (%.2fs)",
+                str(self),
+                str(self.shape_global),
+                end - start,
+            )
 
         self._is_halo_dirty = False
 
