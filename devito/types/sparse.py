@@ -1864,7 +1864,9 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             scattered_mcol = np.empty([nnz], dtype=np.int32)
             scattered_mval = np.empty([nnz], dtype=self.dtype)
         else:
-            scattered_data = self.data
+            # The copy() here is because we need to ensure the MPI transfer
+            # does not occur from a huge-page allocated buffer
+            scattered_data = self.data.copy()
 
             # These are copies because we mess with them down below
             scattered_gp = self._gridpoints.data.copy()
@@ -2001,10 +2003,15 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
         else:
             distributor.comm.Reduce(
                 MPI.IN_PLACE,
-                self.scattered_data,  # Note: on rank 0 data === scattered_data.
+                self.scattered_data,
                 op=MPI.SUM,
                 root=0
             )
+
+            # Put data back into devito.Data() allocated with whatever user requested
+            # TODO actually this is arse-about. We need huge pages in the actual
+            # propagation part, not the bit the caller interacts with.
+            self.data[:] = self.scattered_data
 
     def _dist_gather(self, data):
         pass
