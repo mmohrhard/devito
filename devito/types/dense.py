@@ -460,6 +460,20 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         """
         return self.data._gather(start=start, stop=stop, step=step, rank=rank)
 
+    def _mark_halo_dirty(self):
+        if not self._is_halo_dirty:
+            from traceback import extract_stack
+            info("marking %s dirty", str(self))
+            for fs in extract_stack()[-2::-1]:
+                info(
+                    "  stack for dirty %s: %s:%s:%d",
+                    str(self),
+                    fs.filename,
+                    fs.name,
+                    fs.lineno
+                )
+        self._is_halo_dirty = True
+
     @property
     @_allocate_memory
     def data_domain(self):
@@ -476,7 +490,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         get back. If you only need to look at the values, use
         :meth:`data_ro_domain` instead.
         """
-        self._is_halo_dirty = True
+        self._mark_halo_dirty()
         return self._data._global(self._mask_domain, self._decomposition)
 
     @property
@@ -493,7 +507,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         get back. If you only need to look at the values, use
         :meth:`data_ro_with_halo` instead.
         """
-        self._is_halo_dirty = True
+        self._mark_halo_dirty()
         self._halo_exchange()
         return self._data._global(self._mask_outhalo, self._decomposition_outhalo)
 
@@ -518,7 +532,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         Typically, this accessor won't be used in user code to set or read data
         values. Instead, it may come in handy for testing or debugging
         """
-        self._is_halo_dirty = True
+        self._mark_halo_dirty()
         self._halo_exchange()
         return np.asarray(self._data[self._mask_inhalo])
 
@@ -541,7 +555,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         Typically, this accessor won't be used in user code to set or read data
         values. Instead, it may come in handy for testing or debugging
         """
-        self._is_halo_dirty = True
+        self._mark_halo_dirty()
         self._halo_exchange()
         return np.asarray(self._data)
 
@@ -569,7 +583,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         Typically, this accessor won't be used in user code to set or read
         data values.
         """
-        self._is_halo_dirty = True
+        self._mark_halo_dirty()
         offset = getattr(getattr(self, '_offset_%s' % region.name)[dim], side.name)
         size = getattr(getattr(self, '_size_%s' % region.name)[dim], side.name)
         index_array = [
