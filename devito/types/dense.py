@@ -583,7 +583,6 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         Typically, this accessor won't be used in user code to set or read
         data values.
         """
-        self._mark_halo_dirty()
         offset = getattr(getattr(self, '_offset_%s' % region.name)[dim], side.name)
         size = getattr(getattr(self, '_size_%s' % region.name)[dim], side.name)
         index_array = [
