@@ -462,16 +462,9 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
 
     def _mark_halo_dirty(self):
         if not self._is_halo_dirty:
-            from traceback import extract_stack
             info("marking %s dirty", str(self))
-            for fs in extract_stack()[-2::-1]:
-                info(
-                    "  stack for dirty %s: %s:%s:%d",
-                    str(self),
-                    fs.filename,
-                    fs.name,
-                    fs.lineno
-                )
+            from traceback import extract_stack
+            self._dirty_stack = [f"{fs.filename}:{fs.name}:{fs.lineno}" for fs in extract_stack()[-2::-1]]
         self._is_halo_dirty = True
 
     @property
@@ -827,6 +820,9 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                 str(self.shape_global),
                 end - start,
             )
+            # log the stack trace for the time it was marked dirty
+            for entry in self._dirty_stack:
+                info("  %s: stack for when marked dirty: %s", str(self), entry)
 
         self._is_halo_dirty = False
 
