@@ -6,7 +6,7 @@ import numpy as np
 from cached_property import cached_property
 
 from devito.finite_differences import generate_fd_shortcuts
-from devito.mpi import MPI, SparseDistributor
+from devito.mpi import MPI, SparseDistributor, safe_Bcast, safe_Reduce_inplace
 from devito.operations import LinearInterpolator, PrecomputedInterpolator
 from devito.symbolics import (INT, FLOOR, cast_mapper, indexify,
                               retrieve_function_carriers)
@@ -1878,10 +1878,10 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             scattered_mval = m_coo.data.copy()
 
         if not data_all_zero:
-            distributor.comm.Bcast(scattered_data, root=0)
+            safe_Bcast(distributor.comm, scattered_data, root=0)
         for arr in [scattered_gp, *scattered_coeffs,
                     scattered_mrow, scattered_mcol, scattered_mval]:
-            distributor.comm.Bcast(arr, root=0)
+            safe_Bcast(distributor.comm, arr, root=0)
 
         # now recreate the matrix to only contain points in our
         # local domain.
@@ -1994,15 +1994,15 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
 
         # This relies on all ranks having a copy of all data. Which feels "bad".
         if distributor.myrank != 0:
-            distributor.comm.Reduce(
+            safe_Reduce_inplace(
+                distributor.comm,
                 self.scattered_data,
-                None,
                 op=MPI.SUM,
                 root=0
             )
         else:
-            distributor.comm.Reduce(
-                MPI.IN_PLACE,
+            safe_Reduce_inplace(
+                distributor.comm,
                 self.scattered_data,
                 op=MPI.SUM,
                 root=0

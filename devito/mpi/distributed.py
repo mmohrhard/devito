@@ -55,7 +55,9 @@ except ImportError:
             return None
 
 
-__all__ = ['Distributor', 'SparseDistributor', 'MPI']
+__all__ = [
+    'Distributor', 'SparseDistributor', 'MPI', 'safe_Bcast', 'safe_Reduce_inplace'
+]
 
 
 class AbstractDistributor(ABC):
@@ -566,3 +568,75 @@ def compute_dims(nprocs, ndim):
     else:
         v = int(v)
     return tuple(v for _ in range(ndim))
+
+
+######
+# "safe" MPI wrappers
+#
+# These wrap some commonly used MPI functions to add some
+# (unfortunately) necessary changes:
+#
+#   - protection against sending from or receiving
+#     into buffers which might be allocated with magic
+#     allocators (e.g. huge pages)
+#   - works around an issue with caching of memory
+#     registrations in RDMA, which could mean that
+#     buffers used in MPI communications remain pinned
+#     in memory and thus cause issues with huge
+#     page defragmentation.
+#   - (TODO soon) avoiding large item counts
+#     or transfer buffer sizes.
+#
+# although these violates the recommended style, the
+# capitals are deliberate here, to correspond to mpi4py notation
+# where capitals indicate buffer-protocol sends rather than
+# python objects which require pickling.
+#
+######
+
+
+def safe_Bcast(comm, buf, root):
+    # Firstly, we don't need to do anything if
+    # no communications will actually happen, so just
+    # detect that case.
+    if comm.size == 1:
+        return
+
+    # Allocate a plain old numpy array to hold the data
+    # Bcast in general supports the buffer protocol but I'll
+    # restrict it to numpy ndarray and subclasses here.
+    assert isinstance(buf, np.ndarray)
+    temporary_buf = np.empty(buf.shape, dtype=buf.dtype)
+
+    if comm.rank == root:
+        temporary_buf[:] = buf
+
+    comm.Bcast(temporary_buf, root=root)
+
+    if comm.rank != root:
+        buf[:] = temporary_buf
+
+
+def safe_Reduce_inplace(comm, buf, op, root):
+    # Firstly, we don't need to do anything if
+    # no communications will actually happen, so just
+    # detect that case.
+    if comm.size == 1:
+        return
+
+    # Allocate a plain old numpy array to hold the data
+    # Bcast in general supports the buffer protocol but I'll
+    # restrict it to numpy ndarray and subclasses here.
+    assert isinstance(buf, np.ndarray)
+    temporary_buf = np.empty(buf.shape, dtype=buf.dtype)
+    temporary_buf[:] = buf
+
+    # This if shouldn't be needed - it's not in C
+    # IIRC this was an mpi4py issue
+    if comm.rank != root:
+        comm.Reduce(temporary_buf, None, op=op, root=root)
+    else:
+        comm.Reduce(MPI.IN_PLACE, temporary_buf, op=op, root=root)
+
+    if comm.rank == root:
+        buf[:] = temporary_buf
