@@ -464,7 +464,10 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         if not self._is_halo_dirty:
             info("marking %s dirty", str(self))
             from traceback import extract_stack
-            self._dirty_stack = [f"{fs.filename}:{fs.name}:{fs.lineno}" for fs in extract_stack()[-2::-1]]
+            self._dirty_stack = [
+                f"{fs.filename}:{fs.name}:{fs.lineno}"
+                for fs in extract_stack()[-2::-1]
+            ]
         self._is_halo_dirty = True
 
     @property
@@ -790,8 +793,6 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                 dest = neighborhood[d][i]
                 source = neighborhood[d][i.flip()]
 
-                info("(halo exchange of %s) %s -> %s", str(self), source, dest)
-
                 # Gather send data
                 data = self._data_in_region(OWNED, d, i)
                 sendbuf = np.ascontiguousarray(data)
@@ -800,29 +801,38 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                 shape = self._data_in_region(HALO, d, i.flip()).shape
                 recvbuf = np.empty(shape=shape, dtype=self.dtype)
 
+                # Is a transfer actually going to occur?
+                transfer = False
+                if source != MPI.PROC_NULL and recvbuf.size > 0:
+                    transfer = True
+                if dest != MPI.PROC_NULL and sendbuf.size > 0:
+                    transfer = True
+
                 # Communication
+                if transfer:
+                    info(
+                        "  (%s:%s:%s) %s -> me -> %s",
+                        self.name, d.name, str(i), source, dest
+                    )
+                    did_transfer = True
+
                 comm.Sendrecv(sendbuf, dest=dest, recvbuf=recvbuf, source=source)
 
                 # Scatter received data
                 if source != MPI.PROC_NULL:
                     self._data_in_region(HALO, d, i.flip())[:] = recvbuf
 
-                if source != MPI.PROC_NULL and recvbuf.size > 0:
-                    did_transfer = True
-                if dest != MPI.PROC_NULL and sendbuf.size > 0:
-                    did_transfer = True
-
         if did_transfer:
             end = monotonic()
-            warning(
+            info(
                 "pythonland halo exchange for %s! (global shape %s) (%.2fs)",
                 str(self),
                 str(self.shape_global),
                 end - start,
             )
             # log the stack trace for the time it was marked dirty
-            for entry in self._dirty_stack:
-                info("  %s: stack for when marked dirty: %s", str(self), entry)
+            # for entry in self._dirty_stack:
+            #     debug("  %s: stack for when marked dirty: %s", str(self), entry)
 
         self._is_halo_dirty = False
 
