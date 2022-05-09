@@ -210,6 +210,8 @@ def dtype_to_mpitype(dtype):
     """Map numpy types to MPI datatypes."""
     return {np.ubyte: 'MPI_BYTE',
             np.ushort: 'MPI_UNSIGNED_SHORT',
+            np.int8: 'MPI_INT8_T',
+            np.uint8: 'MPI_UINT8_T',
             np.int32: 'MPI_INT',
             np.float32: 'MPI_FLOAT',
             np.int64: 'MPI_LONG',
