@@ -8,7 +8,6 @@ from sympy import Max, Min
 from devito.data import CORE, OWNED, LEFT, CENTER, RIGHT
 from devito.ir.support import Scope
 from devito.tools import Tag, as_tuple, filter_ordered, flatten, frozendict, is_integer
-from devito.types import Grid
 
 __all__ = ['HaloScheme', 'HaloSchemeEntry', 'HaloSchemeException']
 
@@ -346,6 +345,8 @@ def classify(exprs, ispace):
     Produce the mapper ``Function -> HaloSchemeEntry``, which describes the
     necessary halo exchanges in the given Scope.
     """
+    from devito.types.grid import Grid
+
     scope = Scope(exprs)
 
     mapper = {}

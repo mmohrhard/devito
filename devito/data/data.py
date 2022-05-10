@@ -46,13 +46,13 @@ class Data(np.ndarray):
 
     def __new__(cls, shape, dtype, decomposition=None, modulo=None, allocator=ALLOC_FLAT,
                 distributor=None):
-        assert len(shape) == len(modulo)
         ndarray, memfree_args = allocator.alloc(shape, dtype)
         obj = ndarray.view(cls)
         obj._allocator = allocator
         obj._memfree_args = memfree_args
         obj._decomposition = decomposition or (None,)*len(shape)
         obj._modulo = modulo or (False,)*len(shape)
+        assert len(shape) == len(obj._modulo)
         obj._distributor = distributor
 
         # This cannot be a property, as Data objects constructed from this
