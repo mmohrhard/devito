@@ -13,6 +13,8 @@ from devito.parameters import configuration
 from devito.tools import EnrichedTuple, as_tuple, ctypes_to_cstr, filter_ordered
 from devito.types import CompositeObject, Object
 
+# Maximum operation size for safe broadcast/reduce below
+MPI_NBYTES_MAX = 1024 * 1024 * 1024
 
 # Do not prematurely initialize MPI
 # This allows launching a Devito program from within another Python program
@@ -596,47 +598,86 @@ def compute_dims(nprocs, ndim):
 
 
 def safe_Bcast(comm, buf, root):
-    # Firstly, we don't need to do anything if
-    # no communications will actually happen, so just
-    # detect that case.
-    if comm.size == 1:
-        return
-
-    # Allocate a plain old numpy array to hold the data
     # Bcast in general supports the buffer protocol but I'll
     # restrict it to numpy ndarray and subclasses here.
     assert isinstance(buf, np.ndarray)
-    temporary_buf = np.empty(buf.shape, dtype=buf.dtype)
 
-    if comm.rank == root:
-        temporary_buf[:] = buf
+    # Firstly, we don't need to do anything if
+    # no communications will actually happen, so just
+    # detect that case.
+    # Likewise for 0-size array, which will break the
+    # array_split logic below so skip that too.
+    if comm.size == 1 or buf.size == 0:
+        return
 
-    comm.Bcast(temporary_buf, root=root)
+    # Ensure the broadcast is done in units of less than
+    # MPI_NBYTES_MAX bytes per transfer.
+    # The reason for this is twofold:
+    #  - MPI itself has a restriction that item counts
+    #    be representable as an 'int', which is usually 32 bit
+    #  - Linux RDMA appears to have an issue with
+    #    buffers >4GB in size.
 
-    if comm.rank != root:
-        buf[:] = temporary_buf
+    # We need C-contiguous to ensure that ravel doesn't take
+    # a copy.
+    assert buf.flags.c_contiguous
+    nchunks = (buf.nbytes + MPI_NBYTES_MAX - 1) // MPI_NBYTES_MAX
+    buf_ravel = np.ravel(buf)
+
+    # Just double-check we're working with a view into the original
+    assert not buf_ravel.flags.owndata
+    chunks = np.array_split(buf_ravel, nchunks)
+
+    for chunk in chunks:
+        temporary_buf = np.empty(chunk.shape, dtype=chunk.dtype)
+        if comm.rank == root:
+            temporary_buf[:] = chunk
+
+        comm.Bcast(temporary_buf, root=root)
+
+        if comm.rank != root:
+            chunk[:] = temporary_buf
 
 
 def safe_Reduce_inplace(comm, buf, op, root):
+    # Reduce in general supports the buffer protocol but I'll
+    # restrict it to numpy ndarray and subclasses here.
+    assert isinstance(buf, np.ndarray)
+
     # Firstly, we don't need to do anything if
     # no communications will actually happen, so just
     # detect that case.
-    if comm.size == 1:
+    # Likewise for 0-size array, which will break the
+    # array_split logic below so skip that too.
+    if comm.size == 1 or buf.size == 0:
         return
 
-    # Allocate a plain old numpy array to hold the data
-    # Bcast in general supports the buffer protocol but I'll
-    # restrict it to numpy ndarray and subclasses here.
-    assert isinstance(buf, np.ndarray)
-    temporary_buf = np.empty(buf.shape, dtype=buf.dtype)
-    temporary_buf[:] = buf
+    # Ensure the reduce is done in units of less than
+    # MPI_NBYTES_MAX bytes per transfer.
+    # The reason for this is twofold:
+    #  - MPI itself has a restriction that item counts
+    #    be representable as an 'int', which is usually 32 bit
+    #  - Linux RDMA appears to have an issue with
+    #    buffers >4GB in size.
 
-    # This if shouldn't be needed - it's not in C
-    # IIRC this was an mpi4py issue
-    if comm.rank != root:
-        comm.Reduce(temporary_buf, None, op=op, root=root)
-    else:
-        comm.Reduce(MPI.IN_PLACE, temporary_buf, op=op, root=root)
+    # We need C-contiguous to ensure that ravel doesn't take
+    # a copy.
+    assert buf.flags.c_contiguous
+    nchunks = (buf.nbytes + MPI_NBYTES_MAX - 1) // MPI_NBYTES_MAX
+    buf_ravel = np.ravel(buf)
 
-    if comm.rank == root:
-        buf[:] = temporary_buf
+    # Just double-check we're working with a view into the original
+    assert not buf_ravel.flags.owndata
+    chunks = np.array_split(buf_ravel, nchunks)
+
+    for chunk in chunks:
+        temporary_buf = np.empty(chunk.shape, dtype=chunk.dtype)
+        temporary_buf[:] = chunk
+
+        # This if shouldn't be needed - it's not in C
+        # IIRC this was an mpi4py issue
+        if comm.rank != root:
+            comm.Reduce(temporary_buf, None, op=op, root=root)
+        else:
+            comm.Reduce(MPI.IN_PLACE, temporary_buf, op=op, root=root)
+            chunk[:] = temporary_buf
