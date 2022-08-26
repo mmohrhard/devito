@@ -301,6 +301,10 @@ class Fission(Queue):
         for (it, guards), g in groupby(clusters, key=lambda c: self._key(c, prefix)):
             group = list(g)
 
+            if it is None:
+                # abort
+                return clusters
+
             if any(SEQUENTIAL in c.properties[it.dim] for c in group) or guards:
                 # Heuristic: no gain from fissioning if unable to ultimately
                 # increase the number of collapsable iteration spaces, hence give up
