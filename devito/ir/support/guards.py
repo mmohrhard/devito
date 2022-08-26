@@ -9,6 +9,7 @@ from sympy.core.operations import LatticeOp
 
 from devito.ir.support.space import Forward, IterationDirection
 from devito.symbolics import CondEq, CondNe, FLOAT
+from devito.tools import Pickable
 from devito.types import Dimension
 
 __all__ = ['GuardFactor', 'GuardBound', 'GuardBoundNext', 'BaseGuardBound',
@@ -33,7 +34,7 @@ class Guard(object):
 # *** GuardFactor
 
 
-class GuardFactor(Guard, CondEq):
+class GuardFactor(Guard, CondEq, Pickable):
 
     """
     A guard for factor-based ConditionalDimensions.
@@ -41,6 +42,8 @@ class GuardFactor(Guard, CondEq):
     Given the ConditionalDimension `d` with factor `k`, create the
     symbolic relational `d.parent % k == 0`.
     """
+
+    __rargs__ = ('d',)
 
     def __new__(cls, d, **kwargs):
         assert d.is_Conditional
@@ -53,6 +56,9 @@ class GuardFactor(Guard, CondEq):
     @property
     def _args_rebuild(self):
         return (self.d,)
+
+    func = Pickable._rebuild
+    __reduce_ex__ = Pickable.__reduce_ex__
 
 
 class GuardFactorEq(GuardFactor, CondEq):
