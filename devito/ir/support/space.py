@@ -548,7 +548,8 @@ class IterationInterval(object):
         return "%s%s" % (self.interval, self.direction)
 
     def __eq__(self, other):
-        return self.direction is other.direction and self.interval == other.interval
+        return isinstance(other, IterationInterval) and\
+            self.interval == other.interval and self.direction is other.direction
 
     def __hash__(self):
         return hash((self.interval, self.direction))
