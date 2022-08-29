@@ -220,10 +220,15 @@ class PragmaShmTransformer(PragmaSimdTransformer):
                 if nested:
                     try:
                         work = prod([int(j.dim.symbolic_size) for j in nested])
-                        if work < self.collapse_work:
-                            break
                     except TypeError:
-                        pass
+                        # we can't estimate amount of work, assume it's significant
+                        work = None
+                else:
+                    # there are no iterations
+                    work = 1
+
+                if work is not None and work < self.collapse_work:
+                    break
 
                 collapsable.append(i)
 
