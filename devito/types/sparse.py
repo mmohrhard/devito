@@ -1918,6 +1918,17 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             active_mcol = active_mcol[which]
             active_mval = active_mval[which]
 
+        # HACK! It seems like maybe GPUs don't like zero-size arrays
+        if active_mcol.size == 0:
+            gpu_hack = True
+            active_mcol = np.zeros([1], dtype=active_mcol.dtype)
+            active_mrow = np.zeros([1], dtype=active_mrow.dtype)
+            active_mval = np.zeros([1], dtype=active_mval.dtype)
+            scattered_gp = np.zeros([1, len(self.grid.dimensions)], dtype=scattered_gp.dtype)
+            scattered_data = np.zeros([scattered_data.shape[0], 1], dtype=scattered_data.dtype)
+        else:
+            gpu_hack = False
+
         # then, zero any of the coefficients which refer to points outside our
         # domain.  Do this on all the gridpoints for now, since this is a hack
         # anyway
@@ -1932,6 +1943,10 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             if this_dim_r is None:
                 this_dim_r = self.grid.dimension_map[dim].glb
                 effective_gridpoints = np.zeros_like(effective_gridpoints)
+
+            if gpu_hack:
+                scattered_coeffs[idim] = np.zeros([1, this_dim_r], dtype=scattered_coeffs[idim].dtype)
+                continue
 
             trim_size = np.clip(_left - effective_gridpoints, 0, this_dim_r)
             for ir in range(this_dim_r):
