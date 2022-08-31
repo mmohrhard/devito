@@ -75,7 +75,7 @@ GuardFactor = GuardFactorEq
 # *** GuardBound
 
 
-class BaseGuardBound(Guard):
+class BaseGuardBound(Guard, Pickable):
 
     """
     A guard to avoid out-of-bounds iteration.
@@ -84,6 +84,8 @@ class BaseGuardBound(Guard):
     relational `p0 <= p1`.
     """
 
+    __rargs__ = ('lhs', 'rhs')
+
     def __new__(cls, p0, p1, **kwargs):
         try:
             if cls.__base__._eval_relation(p0, p1) is true:
@@ -91,6 +93,13 @@ class BaseGuardBound(Guard):
         except TypeError:
             pass
         return super().__new__(cls, p0, p1, evaluate=False)
+
+    @property
+    def _args_rebuild(self):
+        return (self.lhs, self.rhs)
+
+    func = Pickable._rebuild
+    __reduce_ex__ = Pickable.__reduce_ex__
 
 
 class GuardBoundLe(BaseGuardBound, Le):
@@ -107,7 +116,7 @@ GuardBound = GuardBoundLe
 # *** GuardBoundNext
 
 
-class BaseGuardBoundNext(Guard):
+class BaseGuardBoundNext(Guard, Pickable):
 
     """
     A guard to avoid out-of-bounds iteration.
@@ -121,6 +130,7 @@ class BaseGuardBoundNext(Guard):
     where `next(d)` represents the next iteration along `d` for the
     given `direction`.
     """
+    __rargs__ = ('d', 'direction')
 
     def __new__(cls, d, direction, **kwargs):
         assert isinstance(d, Dimension)
@@ -164,6 +174,9 @@ class BaseGuardBoundNext(Guard):
     @property
     def _args_rebuild(self):
         return (self.d, self.direction)
+
+    func = Pickable._rebuild
+    __reduce_ex__ = Pickable.__reduce_ex__
 
 
 class GuardBoundNextLe(BaseGuardBoundNext, Le):
