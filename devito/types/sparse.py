@@ -1925,7 +1925,6 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             active_mrow = np.zeros([1], dtype=active_mrow.dtype)
             active_mval = np.zeros([1], dtype=active_mval.dtype)
             scattered_gp = np.zeros([1, len(self.grid.dimensions)], dtype=scattered_gp.dtype)
-            scattered_data = np.zeros([scattered_data.shape[0], 1], dtype=scattered_data.dtype)
         else:
             gpu_hack = False
 
