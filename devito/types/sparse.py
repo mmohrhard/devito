@@ -1928,7 +1928,10 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             active_mcol = np.zeros([1], dtype=active_mcol.dtype)
             active_mrow = np.zeros([1], dtype=active_mrow.dtype)
             active_mval = np.zeros([1], dtype=active_mval.dtype)
-            scattered_gp = np.zeros([1, len(self.grid.dimensions)], dtype=scattered_gp.dtype)
+            scattered_gp = np.zeros(
+                [1, len(self.grid.dimensions)],
+                dtype=scattered_gp.dtype
+            )
         else:
             gpu_hack = False
 
@@ -1948,7 +1951,10 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
                 effective_gridpoints = np.zeros_like(effective_gridpoints)
 
             if gpu_hack:
-                scattered_coeffs[idim] = np.zeros([1, this_dim_r], dtype=scattered_coeffs[idim].dtype)
+                scattered_coeffs[idim] = np.zeros(
+                    [1, this_dim_r],
+                    dtype=scattered_coeffs[idim].dtype
+                )
                 continue
 
             trim_size = np.clip(_left - effective_gridpoints, 0, this_dim_r)
