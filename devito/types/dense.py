@@ -121,10 +121,6 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                 debug("Allocating host memory for %s%s [%s]"
                       % (self.name, self.shape_allocated, humanbytes(self.nbytes)))
 
-                # Clear up both SymPy and Devito caches to drop unreachable data
-                CacheManager.clear(force=False)
-                debug("cache cleared")
-
                 # Allocate the actual data object
                 self._data = self._DataType(self.shape_allocated, self.dtype,
                                             modulo=self._mask_modulo,
