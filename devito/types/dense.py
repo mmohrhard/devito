@@ -123,12 +123,15 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
 
                 # Clear up both SymPy and Devito caches to drop unreachable data
                 CacheManager.clear(force=False)
+                debug("cache cleared")
 
                 # Allocate the actual data object
                 self._data = self._DataType(self.shape_allocated, self.dtype,
                                             modulo=self._mask_modulo,
                                             allocator=self._allocator,
                                             distributor=self._distributor)
+
+                debug("data object created")
 
                 # Initialize data
                 if self._first_touch:
@@ -144,6 +147,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                         self._initializer(self.data)
                 else:
                     self.data_with_halo.fill(0)
+
+                debug("initialized")
 
             return func(self)
         return wrapper
