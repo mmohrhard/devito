@@ -1800,8 +1800,12 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             self.scattered_data = self.data
             self.scatter_result = {
                 self: self.data,
+                self.gridpoints: self.gridpoints.data,
                 **{
-                    getattr(self, k): getattr(self, k).data for k in self._sub_functions
+                    self.interpolation_coefficients[d]: (
+                        self.interpolation_coefficients[d].data
+                    )
+                    for d in self.grid.dimensions
                 },
                 self.mrow: self.mrow.data,
                 self.mcol: self.mcol.data,
