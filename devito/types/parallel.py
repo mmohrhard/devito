@@ -22,7 +22,7 @@ from devito.types.misc import Pointer, VolatileInt
 
 __all__ = ['NThreads', 'NThreadsNested', 'NThreadsNonaffine', 'NThreadsBase',
            'DeviceID', 'ThreadID', 'Lock', 'PThreadArray', 'SharedData',
-           'NPThreads', 'DeviceRM', 'DevicePointer', 'QueueID']
+           'NPThreads', 'DeviceRM', 'UpdateHost', 'DevicePointer', 'QueueID']
 
 
 class NThreadsBase(Scalar):
@@ -270,6 +270,20 @@ class DeviceRM(DeviceSymbol):
         except KeyError:
             return self._arg_defaults()
 
+class UpdateHost(DeviceSymbol):
+
+    name = 'updatehost'
+
+    @property
+    def default_value(self):
+        return 1
+
+    def _arg_values(self, **kwargs):
+        try:
+            # Enforce 1 or 0
+            return {self.name: int(bool(kwargs[self.name]))}
+        except KeyError:
+            return self._arg_defaults()
 
 class QueueID(Symbol):
 

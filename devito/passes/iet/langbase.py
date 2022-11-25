@@ -88,21 +88,21 @@ class LangBB(object, metaclass=LangMeta):
         raise NotImplementedError
 
     @classmethod
-    def _map_update(cls, f, imask=None):
+    def _map_update(cls, f, imask=None, condition=None):
         """
         Copyi Function from device to host memory.
         """
         raise NotImplementedError
 
     @classmethod
-    def _map_update_host(cls, f, imask=None, qid=None):
+    def _map_update_host(cls, f, imask=None, qid=None, condition=None):
         """
         Copy Function from device to host memory (alternative to _map_update).
         """
         raise NotImplementedError
 
     @classmethod
-    def _map_update_host_async(cls, f, imask=None, qid=None):
+    def _map_update_host_async(cls, f, imask=None, qid=None, condition=None):
         """
         Asynchronously copy Function from device to host memory.
         """

@@ -615,12 +615,12 @@ class PragmaLangBB(LangBB):
     _map_wait = None
 
     @classmethod
-    def _map_update(cls, f, imask=None):
-        return PragmaTransfer(cls.mapper['map-update'], f, imask)
+    def _map_update(cls, f, imask=None, condition=None):
+        return PragmaTransfer(cls.mapper['map-update'], f, imask, condition)
 
     @classmethod
-    def _map_update_host(cls, f, imask=None, qid=None):
-        return PragmaTransfer(cls.mapper['map-update-host'], f, imask)
+    def _map_update_host(cls, f, imask=None, qid=None, condition=None):
+        return PragmaTransfer(cls.mapper['map-update-host'], f, imask, condition)
 
     _map_update_host_async = _map_update_host
 

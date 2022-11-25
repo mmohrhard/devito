@@ -18,7 +18,7 @@ from devito.passes.iet.misc import is_on_device
 from devito.symbolics import (Byref, DefFunction, FieldFromPointer, IndexedPointer,
                               ListInitializer, SizeOf, VOID, Keyword, ccode)
 from devito.tools import as_mapper, as_tuple, filter_sorted, flatten
-from devito.types import DeviceRM, Symbol
+from devito.types import DeviceRM, UpdateHost, Symbol
 from devito.types.dense import AliasFunction
 
 __all__ = ['DataManager', 'DeviceAwareDataManager', 'Storage']
@@ -402,7 +402,7 @@ class DeviceAwareDataManager(DataManager):
 
         storage.update(obj, site, maps=mmap, unmaps=unmap)
 
-    def _map_function_on_high_bw_mem(self, site, obj, storage, devicerm, read_only=False):
+    def _map_function_on_high_bw_mem(self, site, obj, storage, devicerm, read_only=False, updatehost=None):
         """
         Map a Function already defined in the host memory in to the device high
         bandwidth memory.
@@ -416,7 +416,7 @@ class DeviceAwareDataManager(DataManager):
         mmap = self.lang._map_to(obj)
 
         if read_only is False:
-            unmap = [self.lang._map_update(obj),
+            unmap = [self.lang._map_update_host(obj, condition=updatehost),
                      self.lang._map_release(obj, devicerm=devicerm)]
         else:
             unmap = self.lang._map_delete(obj, devicerm=devicerm)
@@ -483,13 +483,13 @@ class DeviceAwareDataManager(DataManager):
 
             # Special symbol which gives user code control over data deallocations
             devicerm = DeviceRM()
-
+            updatehost = UpdateHost()
             storage = Storage()
             for i in filter_sorted(writes):
                 if i.is_Array:
                     self._map_array_on_high_bw_mem(iet, i, storage)
                 else:
-                    self._map_function_on_high_bw_mem(iet, i, storage, devicerm)
+                    self._map_function_on_high_bw_mem(iet, i, storage, devicerm, updatehost = updatehost)
             for i in filter_sorted(reads - writes):
                 if i.is_Array:
                     self._map_array_on_high_bw_mem(iet, i, storage)

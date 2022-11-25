@@ -99,15 +99,21 @@ class AccBB(PragmaLangBB):
         'map-wait': lambda i:
             c.Pragma('acc wait(%s)' % i),
         'map-update': lambda i, j:
-            c.Pragma('acc exit data copyout(%s%s)' % (i, j)),
+            c.Pragma('acc update self(%s%s)' % (i, j)),
+        'map-update-host-if': lambda i, j, k:
+            c.Pragma('acc update self(%s%s) if(%s)' % (i, j, k)),
         'map-update-host': lambda i, j:
             c.Pragma('acc update self(%s%s)' % (i, j)),
         'map-update-host-async': lambda i, j, k:
             c.Pragma('acc update self(%s%s) async(%s)' % (i, j, k)),
+        'map-update-host-async-if': lambda i, j, k, l:
+            c.Pragma('acc update self(%s%s) async(%s) if(%s)' % (i, j, k, l)),
         'map-update-device': lambda i, j:
             c.Pragma('acc update device(%s%s)' % (i, j)),
         'map-update-device-async': lambda i, j, k:
             c.Pragma('acc update device(%s%s) async(%s)' % (i, j, k)),
+        'map-update-device-async-if': lambda i, j, k, l:
+            c.Pragma('acc update device(%s%s) async(%s) if(%s)' % (i, j, k, l)),
         'map-release': lambda i, j:
             c.Pragma('acc exit data delete(%s%s)' % (i, j)),
         'map-release-if': lambda i, j, k:
@@ -147,6 +153,13 @@ class AccBB(PragmaLangBB):
         return Pragma(cls.mapper['map-wait'], qid)
 
     @classmethod
+    def _map_update_host(cls, f, imask=None, condition=None):
+        if condition:
+            return PragmaTransfer(cls.mapper['map-update-host-if'], f, imask, condition)
+        else:
+            return PragmaTransfer(cls.mapper['map-update-host'], f, imask)
+
+    @classmethod
     def _map_delete(cls, f, imask=None, devicerm=None):
         if devicerm:
             return PragmaTransfer(cls.mapper['map-exit-delete-if'], f, imask, devicerm)
@@ -154,12 +167,25 @@ class AccBB(PragmaLangBB):
             return PragmaTransfer(cls.mapper['map-exit-delete'], f, imask)
 
     @classmethod
-    def _map_update_host_async(cls, f, imask=None, qid=None):
-        return PragmaTransfer(cls.mapper['map-update-host-async'], f, imask, qid)
+    def _map_update(cls, f, imask=None, condition=None):
+        if condition:
+            return PragmaTransfer(cls.mapper['map-update-host-if'], f, imask, condition)
+        else:
+            return PragmaTransfer(cls.mapper['map-update'], f, imask)
 
     @classmethod
-    def _map_update_device_async(cls, f, imask=None, qid=None):
-        return PragmaTransfer(cls.mapper['map-update-device-async'], f, imask, qid)
+    def _map_update_host_async(cls, f, imask=None, qid=None, condition=None):
+        if condition:
+            return PragmaTransfer(cls.mapper['map-update-host-async-if'], f, imask, qid, condition)
+        else:
+            return PragmaTransfer(cls.mapper['map-update-host-async'], f, imask, qid)
+
+    @classmethod
+    def _map_update_device_async(cls, f, imask=None, qid=None, condition=None):
+        if condition:
+            return PragmaTransfer(cls.mapper['map-update-device-async-if'], f, imask, qid, condition)
+        else:
+            return PragmaTransfer(cls.mapper['map-update-device-async'], f, imask, qid)
 
 
 class DeviceAccizer(PragmaDeviceAwareTransformer):
