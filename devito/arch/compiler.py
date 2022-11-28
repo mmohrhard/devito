@@ -523,6 +523,11 @@ class PGICompiler(Compiler):
 
 class NvidiaCompiler(PGICompiler):
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, cpp=True, **kwargs)
+        self.cflags.append('-cuda')
+        self.cflags.extend(['-mp', '-acc:gpu'])
+
     def __lookup_cmds__(self):
         self.CC = 'nvc++'
         self.CXX = 'nvc++'

@@ -8,14 +8,16 @@ from devito.passes.equations import collect_derivatives
 from devito.passes.clusters import (Lift, Streaming, Tasker, blocking, buffering,
                                     cire, cse, factorize, fission, fuse,
                                     optimize_pows)
-from devito.passes.iet import (DeviceOmpTarget, DeviceAccTarget, mpiize, hoist_prodders,
+from devito.passes.iet import (DeviceOmpTarget, DeviceAccTarget, DeviceCudaTarget, mpiize, hoist_prodders,
                                is_on_device, linearize, pthreadify, relax_incr_dimensions)
 from devito.tools import as_tuple, timed_pass
 
 __all__ = ['DeviceNoopOperator', 'DeviceAdvOperator', 'DeviceCustomOperator',
            'DeviceNoopOmpOperator', 'DeviceAdvOmpOperator', 'DeviceFsgOmpOperator',
            'DeviceCustomOmpOperator', 'DeviceNoopAccOperator', 'DeviceAdvAccOperator',
-           'DeviceFsgAccOperator', 'DeviceCustomAccOperator']
+           'DeviceFsgAccOperator', 'DeviceCustomAccOperator', 'DeviceNoopCudaOperator',
+           'DeviceAdvCudaOperator', 'DeviceAdvCudaOperator', 'DeviceFsgCudaOperator',
+           'DeviceCustomCudaOperator']
 
 
 class DeviceOperatorMixin(object):
@@ -407,6 +409,45 @@ class DeviceCustomAccOperator(DeviceAccOperatorMixin, DeviceCustomOperator):
         return mapper
 
     _known_passes = DeviceCustomOperator._known_passes + ('openacc',)
+    assert not (set(_known_passes) & set(DeviceCustomOperator._known_passes_disabled))
+
+# CUDA
+
+class DeviceCudaOperatorMixin(object):
+
+    _Target = DeviceCudaTarget
+
+    @classmethod
+    def _normalize_kwargs(cls, **kwargs):
+        oo = kwargs['options']
+        oo.pop('openmp', None)
+
+        kwargs = super()._normalize_kwargs(**kwargs)
+        oo['cuda'] = True
+
+        return kwargs
+
+class DeviceNoopCudaOperator(DeviceCudaOperatorMixin, DeviceNoopOperator):
+    pass
+
+
+class DeviceAdvCudaOperator(DeviceCudaOperatorMixin, DeviceAdvOperator):
+    pass
+
+
+class DeviceFsgCudaOperator(DeviceCudaOperatorMixin, DeviceFsgOperator):
+    pass
+
+
+class DeviceCustomCudaOperator(DeviceCudaOperatorMixin, DeviceCustomOperator):
+
+    @classmethod
+    def _make_iet_passes_mapper(cls, **kwargs):
+        mapper = super()._make_iet_passes_mapper(**kwargs)
+        mapper['cuda'] = mapper['parallel']
+        return mapper
+
+    _known_passes = DeviceCustomOperator._known_passes + ('cuda',)
     assert not (set(_known_passes) & set(DeviceCustomOperator._known_passes_disabled))
 
 

@@ -4,8 +4,9 @@ from devito.passes.iet.languages.openmp import (SimdOmpizer, Ompizer, DeviceOmpi
                                                 OmpOrchestrator)
 from devito.passes.iet.languages.openacc import (DeviceAccizer, DeviceAccDataManager,
                                                  AccOrchestrator)
+from devito.passes.iet.languages.cuda import (DeviceCudaizer, DeviceCudaDataManager, CudaOrchestrator)                                                 
 
-__all__ = ['CTarget', 'OmpTarget', 'DeviceOmpTarget', 'DeviceAccTarget']
+__all__ = ['CTarget', 'OmpTarget', 'DeviceOmpTarget', 'DeviceAccTarget', 'DeviceCudaTarget']
 
 
 class Target(object):
@@ -34,3 +35,8 @@ class DeviceAccTarget(Target):
     Parizer = DeviceAccizer
     DataManager = DeviceAccDataManager
     Orchestrator = AccOrchestrator
+
+class DeviceCudaTarget(Target):
+    Parizer = DeviceCudaizer
+    DataManger = DeviceCudaDataManager
+    Orchestrator = CudaOrchestrator
