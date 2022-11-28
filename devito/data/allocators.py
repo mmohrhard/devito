@@ -363,6 +363,36 @@ class ExternalAllocator(MemoryAllocator):
 
         return (self.numpy_array, None)
 
+class CudaAllocator(MemoryAllocator):
+
+    """
+    
+    """
+    @classmethod
+    def initialize(cls):
+        handle = 'libcuda.so'
+
+        if handle is not None:
+            try:
+                cls.lib = ctypes.CDLL(handle)
+            except OSError:
+                cls.lib = None
+    
+    def _alloc_C_libcall(self, size, ctype):
+        if not self.available():
+            raise RuntimeError("Couldn't find `libcuda`'s `cudaMallocHost` to "
+                               "allocate memory")
+        c_bytesize = ctypes.c_ulong(size * ctypes.sizeof(ctype))
+        c_pointer = ctypes.cast(ctypes.c_void_p(), ctypes.c_void_p)
+        
+        ret = self.lib.cudaMallocHost(ctypes.byref(c_pointer), c_bytesize)
+        if ret == 0:
+            return c_pointer, (c_pointer, )
+        else:
+            return None, None
+
+    def free(self, c_pointer):
+        self.lib.cudaFreeHost(c_pointer)
 
 ALLOC_GUARD = GuardAllocator(1048576)
 ALLOC_FLAT = PosixAllocator()
@@ -370,6 +400,7 @@ ALLOC_KNL_DRAM = NumaAllocator(0)
 ALLOC_KNL_MCDRAM = NumaAllocator(1)
 ALLOC_NUMA_ANY = NumaAllocator('any')
 ALLOC_NUMA_LOCAL = NumaAllocator('local')
+ALLOC_CUDA = CudaAllocator()
 
 custom_allocators = {}
 """User-defined allocators."""
@@ -410,6 +441,8 @@ def default_allocator(name=None):
         * ALLOC_KNL_MCDRAM: On a Knights Landing platform, allocate memory in MCDRAM.
                             Falls back to DRAM if there isn't enough space.
         * ALLOC_KNL_DRAM: On a Knights Landing platform, allocate memory in DRAM.
+        * ALLOC_CUDA: When CUDA is being used, allocate page-locked host memory for
+                        faster GPU copies.
 
     Custom allocators may be added with `register_allocator`.
     """
@@ -418,7 +451,9 @@ def default_allocator(name=None):
             return custom_allocators[name]
         except KeyError:
             pass
-
+    
+    if configuration['platform'].name == 'nvidiaX' and configuration['language'].name == 'cuda':
+        return ALLOC_CUDA
     if configuration['develop-mode']:
         return ALLOC_GUARD
     elif NumaAllocator.available():
