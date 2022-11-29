@@ -370,13 +370,12 @@ class CudaAllocator(MemoryAllocator):
     """
     @classmethod
     def initialize(cls):
-        handle = 'libcuda.so'
+        handle = 'libcudart.so'
 
-        if handle is not None:
-            try:
-                cls.lib = ctypes.CDLL(handle)
-            except OSError:
-                cls.lib = None
+        try:
+            cls.lib = ctypes.CDLL(handle)
+        except OSError:
+            cls.lib = None
     
     def _alloc_C_libcall(self, size, ctype):
         if not self.available():
