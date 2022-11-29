@@ -436,6 +436,8 @@ def check_cuda_runtime():
     else:
         warning("Unable to check compatibility of NVidia driver and runtime")
 
+    cuda.cudaFree(0)
+
 
 @memoized_func
 def lscpu():
