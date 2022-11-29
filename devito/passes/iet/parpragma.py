@@ -425,7 +425,7 @@ class PragmaShmTransformer(PragmaSimdTransformer):
 
         iet = Transformer(mapper).visit(iet)
 
-        return iet, {'includes': [self.lang['header']]}
+        return iet, {'includes': self.lang['headers']}
 
     @iet_pass
     def make_parallel(self, iet):

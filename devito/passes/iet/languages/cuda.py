@@ -74,7 +74,7 @@ class CudaBB(PragmaLangBB):
     mapper = {
         # Misc
         'name': 'OpenACC',
-        'header': 'openacc.h',
+        'headers': ['cuda.h','cuda_runtime_api.h'],
         # Platform mapping
         AMDGPUX: Macro('acc_device_radeon'),
         NVIDIAX: Macro('acc_device_nvidia'),

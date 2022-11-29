@@ -74,7 +74,7 @@ class AccBB(PragmaLangBB):
     mapper = {
         # Misc
         'name': 'OpenACC',
-        'header': 'openacc.h',
+        'headers': ['openacc.h'],
         # Platform mapping
         AMDGPUX: Macro('acc_device_radeon'),
         NVIDIAX: Macro('acc_device_nvidia'),

@@ -122,7 +122,7 @@ class OmpBB(PragmaLangBB):
     mapper = {
         # Misc
         'name': 'OpenMP',
-        'header': 'omp.h',
+        'headers': ['omp.h'],
         # Platform mapping
         AMDGPUX: None,
         NVIDIAX: None,
