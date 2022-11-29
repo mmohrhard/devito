@@ -13,7 +13,7 @@ from sympy import IndexedBase
 
 from devito.exceptions import VisitorException
 from devito.ir.iet.nodes import (Node, Iteration, Expression, ExpressionBundle,
-                                 Call, Lambda, BlankLine, Section)
+                                 Call, CudaCall, Lambda, BlankLine, Section, AddressOf)
 from devito.ir.support.space import Backward
 from devito.symbolics import ccode, uxreplace
 from devito.tools import GenericVisitor, as_tuple, filter_ordered, filter_sorted, flatten
@@ -75,6 +75,12 @@ class PrintAST(Visitor):
 
     def visit_Node(self, o):
         return self.indent + '<%s>' % o.__class__.__name__
+
+    def visit_AddressOf(self, o):
+        self._depth += 1
+        body = self._visit(o.child)
+        self._depth -= 1
+        return self.indent + '<AddressOf>\n%s' % (body)
 
     def visit_Generable(self, o):
         body = ' %s' % str(o) if self.verbose else ''
@@ -192,6 +198,8 @@ class CGen(Visitor):
                     ret.append(self._visit(i, nested_call=True))
                 elif isinstance(i, Lambda):
                     ret.append(self._visit(i))
+                elif isinstance(i, AddressOf):
+                    ret.append('&%s' % (i.child._C_name))
                 else:
                     ret.append(i._C_name)
             except AttributeError:
@@ -237,6 +245,10 @@ class CGen(Visitor):
 
     def visit_tuple(self, o):
         return tuple(self._visit(i) for i in o)
+
+    def visit_AddressOf(self, o):
+        rvalue = self.visit(o.child)
+        return '&%s' % (rvalue)
 
     def visit_PointerCast(self, o):
         f = o.function
@@ -389,6 +401,12 @@ class CGen(Visitor):
         if o.pragmas:
             code = c.Module(list(o.pragmas) + [code])
         return code
+
+    def visit_CudaCall(self, o, nested_call=False):
+        retobj = o.retobj
+        arguments = self._args_call(o.arguments)
+        
+        return MultilineCudaCall(o.name, o.grid, o.threads, arguments)
 
     def visit_Call(self, o, nested_call=False):
         retobj = o.retobj
@@ -1060,4 +1078,36 @@ class MultilineCall(c.Generable):
             tip += ";"
         if self.cast:
             tip = '(%s)%s' % (self.cast, tip)
+        yield tip
+
+class MultilineCudaCall(c.Generable):
+
+    def __init__(self, name, grid, threads, arguments):
+        self.name = name
+        self.grid = grid
+        self.threads = threads
+        self.arguments = as_tuple(arguments)
+
+    def generate(self):
+        tip = "%s<<<%s, %s>>>(" % (self.name, self.grid, self.threads)
+        
+        processed = []
+        for i in self.arguments:
+            if isinstance(i, (MultilineCall, LambdaCollection)):
+                lines = list(i.generate())
+                if len(lines) > 1:
+                    yield tip + ",".join(processed + [lines[0]])
+                    for line in lines[1:-1]:
+                        yield line
+                    tip = ""
+                    processed = [lines[-1]]
+                else:
+                    assert len(lines) == 1
+                    processed.append(lines[0])
+            else:
+                processed.append(str(i))
+        tip = tip + ",".join(processed)
+        tip += ")"
+        tip += ";"
+        
         yield tip

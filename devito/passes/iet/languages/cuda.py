@@ -2,9 +2,9 @@ import cgen as c
 import numpy as np
 
 from devito.arch import AMDGPUX, NVIDIAX
-from devito.ir import (Call, DeviceCall, DummyExpr, DPtr, EntryFunction, List,
-                       Block, ParallelIteration, ParallelTree, Pragma,
-                       FindNodes, FindSymbols, Uxreplace, Transformer)
+from devito.ir import (Call, Callable, CudaCall, DeviceCall, DummyExpr, DPtr, EntryFunction, List, CudaCallable,
+                       Block, ParallelIteration, ParallelTree, Pragma, Definition,
+                       FindNodes, FindSymbols, Uxreplace, Transformer, Lambda, AddressOf)
 from devito.passes.iet.engine import iet_pass
 from devito.passes.iet.orchestration import Orchestrator
 from devito.passes.iet.parpragma import (PragmaDeviceAwareTransformer, PragmaLangBB,
@@ -13,6 +13,7 @@ from devito.passes.iet.languages.C import CBB
 from devito.passes.iet.languages.openmp import OmpRegion, OmpIteration
 from devito.passes.iet.languages.utils import make_clause_reduction
 from devito.passes.iet.misc import is_on_device
+from devito.ir.iet.utils import retrieve_iteration_tree, filter_iterations
 from devito.symbolics import Macro, cast_mapper
 from devito.tools import filter_ordered
 from devito.types import DevicePointer, Symbol
@@ -73,18 +74,21 @@ class CudaBB(PragmaLangBB):
 
     mapper = {
         # Misc
-        'name': 'OpenACC',
+        'name': 'CUDA',
         'headers': ['cuda.h','cuda_runtime_api.h'],
         # Platform mapping
-        AMDGPUX: Macro('acc_device_radeon'),
-        NVIDIAX: Macro('acc_device_nvidia'),
+        AMDGPUX: None,
+        NVIDIAX: None,
         # Runtime library
         'init': lambda args:
-            Call('acc_init', args),
+            #Call('acc_init', args),
+            None,
         'num-devices': lambda args, retobj:
-            Call('acc_get_num_devices', args, retobj=retobj),
+#            Call('acc_get_num_devices', args, retobj=retobj),
+            None,
         'set-device': lambda args:
-            Call('acc_set_device_num', args),
+            #Call('acc_set_device_num', args),
+            None,
         # Pragmas
         'atomic': c.Pragma('acc atomic update'),
         'map-enter-to': lambda i, j:
@@ -125,14 +129,20 @@ class CudaBB(PragmaLangBB):
         'memcpy-to-device': lambda i, j, k:
             Call('acc_memcpy_to_device', [i, j, k]),
         'memcpy-to-device-wait': lambda i, j, k, l:
-            List(body=[Call('acc_memcpy_to_device_async', [i, j, k, l]),
+            Lambda(body=[Call('acc_memcpy_to_device_async', [i, j, k, l]),
                        Call('acc_wait', [l])]),
         'device-get':
-            Call('acc_get_device_num'),
+            #Call('acc_get_device_num'),
+            Call('max', (0, 0,)),
         'device-alloc': lambda i, *a, retobj=None:
-            Call('acc_malloc', (i,), retobj=retobj, cast=True),
+            List(body=[
+                Definition(retobj, initvalue='nullptr'),
+                Call('cudaMalloc', (AddressOf(retobj), i,)),
+            ]),
+            #Call('acc_malloc', (i,), retobj=retobj, cast=True),
         'device-free': lambda i, *a:
-            Call('acc_free', (i,))
+            #Call('acc_free', (i,))
+            Call('cudaFree', (i,)),
     }
     mapper.update(CBB.mapper)
 
@@ -192,7 +202,8 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
 
     lang = CudaBB
 
-    def _make_partree(self, candidates, nthreads=None):
+    count = 0
+    def _extract_kernels(self, candidates, nthreads=None):
         assert candidates
 
         root, collapsable = self._select_candidates(candidates)
@@ -213,12 +224,57 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
                 tile = tile[:ncollapsable + 1]
 
             body = self.DeviceIteration(gpu_fit=self.gpu_fit, tile=tile, **root.args)
-            partree = ParallelTree([], body, nthreads=nthreads)
+            kernel = CudaCallable(name="kernel%s" % (self.count),body=ParallelTree([], body, nthreads=nthreads))
+            partree = CudaCall("kernel%s" % (self.count), 'grid', 'threads', None)
+            self.count = self.count + 1
 
-            return root, partree
+            return root, partree, kernel
         else:
-            return super()._make_partree(candidates, nthreads)
 
+            if self._is_offloadable(root):
+                body = self.DeviceIteration(gpu_fit=self.gpu_fit,
+                                            ncollapse=len(collapsable) + 1,
+                                            **root.args)
+                kernel = CudaCallable(name="kernel%s" % (self.count),body=ParallelTree([], body, nthreads=nthreads))
+                partree = CudaCall("kernel%s" % (self.count), 'grid', 'threads', None)
+                self.count = self.count + 1
+                return root, partree, kernel
+            elif not self.par_disabled:
+                # Resort to host parallelism
+                root, partree = super()._make_partree(candidates, nthreads)
+                return root, partree, None
+            else:
+                return root, None, None
+
+    def _make_parallel(self, iet):
+        mapper = {}
+        parrays = {}
+        kernels = []
+        for tree in retrieve_iteration_tree(iet, mode='superset'):
+            # Get the parallelizable Iterations in `tree`
+            candidates = filter_iterations(tree, key=self.key)
+            if not candidates:
+                continue
+
+            # Outer parallelism
+            root, partree, kernel = self._extract_kernels(candidates)
+            if partree is None or root in mapper:
+                continue
+
+            mapper[root] = partree
+            kernels.append(kernel)
+            
+
+        iet = Transformer(mapper).visit(iet)
+
+        return iet, {'efuncs': kernels, 'includes': self.lang['headers']}
+        
+    def _make_nested_partree(self, partree):
+        if isinstance(partree, Callable) or isinstance(partree.root, self.DeviceIteration):
+            # no-op for now
+            return partree
+        else:
+            return super()._make_nested_partree(partree)
 
 class DevicePointerFetch(List):
 
