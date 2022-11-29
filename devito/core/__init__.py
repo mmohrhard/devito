@@ -10,7 +10,9 @@ from devito.core.power import PowerAdvCOperator, PowerAdvOmpOperator
 from devito.core.gpu import (DeviceNoopOmpOperator, DeviceNoopAccOperator,
                              DeviceAdvOmpOperator, DeviceAdvAccOperator,
                              DeviceFsgOmpOperator, DeviceFsgAccOperator,
-                             DeviceCustomOmpOperator, DeviceCustomAccOperator)
+                             DeviceCustomOmpOperator, DeviceCustomAccOperator,
+                             DeviceCustomCudaOperator, DeviceNoopCudaOperator,
+                             DeviceAdvCudaOperator, DeviceFsgCudaOperator)
 from devito.operator.registry import operator_registry
 
 # Register CPU Operators
@@ -41,15 +43,19 @@ operator_registry.add(PowerAdvOmpOperator, Power, 'advanced', 'openmp')
 operator_registry.add(DeviceCustomOmpOperator, Device, 'custom', 'C')
 operator_registry.add(DeviceCustomOmpOperator, Device, 'custom', 'openmp')
 operator_registry.add(DeviceCustomAccOperator, Device, 'custom', 'openacc')
+operator_registry.add(DeviceCustomCudaOperator, Device, 'custom', 'cuda')
 
 operator_registry.add(DeviceNoopOmpOperator, Device, 'noop', 'C')
 operator_registry.add(DeviceNoopOmpOperator, Device, 'noop', 'openmp')
 operator_registry.add(DeviceNoopAccOperator, Device, 'noop', 'openacc')
+operator_registry.add(DeviceNoopCudaOperator, Device, 'noop', 'cuda')
 
 operator_registry.add(DeviceAdvOmpOperator, Device, 'advanced', 'C')
 operator_registry.add(DeviceAdvOmpOperator, Device, 'advanced', 'openmp')
 operator_registry.add(DeviceAdvAccOperator, Device, 'advanced', 'openacc')
+operator_registry.add(DeviceAdvCudaOperator, Device, 'advanced', 'cuda')
 
 operator_registry.add(DeviceFsgOmpOperator, Device, 'advanced-fsg', 'C')
 operator_registry.add(DeviceFsgOmpOperator, Device, 'advanced-fsg', 'openmp')
 operator_registry.add(DeviceFsgAccOperator, Device, 'advanced-fsg', 'openacc')
+operator_registry.add(DeviceFsgCudaOperator, Device, 'advanced-fsg', 'cuda')
