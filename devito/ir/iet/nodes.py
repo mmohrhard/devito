@@ -20,13 +20,13 @@ from devito.types.basic import AbstractFunction, AbstractSymbol
 from devito.types.object import AbstractObject
 from devito.types import Indexed, Symbol
 
-__all__ = ['Node', 'Block', 'Expression', 'Callable', 'Call',
+__all__ = ['Node', 'Block', 'Expression', 'Callable', 'Call', 'CudaCall', 'CudaCallable',
            'Conditional', 'Iteration', 'List', 'Section', 'TimedList', 'Prodder',
            'MetaCall', 'PointerCast', 'HaloSpot', 'Definition', 'ExpressionBundle',
            'AugmentedExpression', 'Increment', 'Return', 'While',
            'ParallelIteration', 'ParallelBlock', 'Dereference', 'Lambda',
            'SyncSpot', 'Pragma', 'DummyExpr', 'BlankLine', 'ParallelTree',
-           'BusyWait', 'CallableBody', 'Transfer', 'HPtr', 'DPtr']
+           'BusyWait', 'CallableBody', 'Transfer', 'HPtr', 'DPtr', 'AddressOf']
 
 # First-class IET nodes
 
@@ -48,6 +48,7 @@ class Node(Signer):
     is_Definition = False
     is_PointerCast = False
     is_Dereference = False
+    is_Reference = False
     is_Section = False
     is_HaloSpot = False
     is_ExpressionBundle = False
@@ -331,6 +332,21 @@ class Call(ExprStmt, Node):
     def writes(self):
         return self._writes
 
+class CudaCall(Call):
+    is_Call = True
+
+    def __init__(self, name, grid, threads, arguments=None, writes=None, types=None):
+        super().__init__(name, arguments, None, writes=writes, types=types)
+        self._grid = grid
+        self._threads = threads
+
+    @property
+    def grid(self):
+        return self._grid
+
+    @property
+    def threads(self):
+        return self._threads
 
 class Expression(ExprStmt, Node):
 
@@ -692,6 +708,13 @@ class Callable(Node):
     def defines(self):
         return self.parameters
 
+class CudaCallable(Callable):
+    is_Callable = True
+
+    _traversable = ['body']
+
+    def __init__(self, name, body, parameters=None):
+        super().__init__(name, body, 'void', parameters=parameters, prefix='__global__')
 
 class CallableBody(Node):
 
@@ -1322,6 +1345,23 @@ def DummyExpr(*args, init=False):
 
 BlankLine = CBlankLine()
 
+
+class AddressOf(Node):
+
+    is_Reference = True
+
+    _traversable = ['child']
+
+    def __init__(self, child=None):
+       self._child = child
+
+    def __repr__(self):
+        return "<AddressOf (%s)>" % str(self._child)
+
+    @property
+    def child(self):
+        return self._child
+    
 
 # Nodes required for distributed-memory halo exchange
 
