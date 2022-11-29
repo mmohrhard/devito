@@ -314,7 +314,7 @@ def ctypes_to_cgen(ctype, fields=None):
 
         # All struct pointers are by construction restrict
         if ct is c_restrict_void_p:
-            cstr = '%srestrict' % cstr
+            cstr = '%s __restrict' % cstr
 
         entries.append(Value(cstr, n))
 

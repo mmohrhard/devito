@@ -38,5 +38,5 @@ class DeviceAccTarget(Target):
 
 class DeviceCudaTarget(Target):
     Parizer = DeviceCudaizer
-    DataManger = DeviceCudaDataManager
+    DataManager = DeviceCudaDataManager
     Orchestrator = CudaOrchestrator
