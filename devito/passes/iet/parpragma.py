@@ -499,7 +499,7 @@ class PragmaDeviceAwareTransformer(DeviceAwareMixin, PragmaShmTransformer):
         else:
             return super()._make_threaded_prodders(partree)
 
-    def _make_partree(self, candidates, nthreads=None):
+    def _make_partree(self, candidates, nthreads=None, qid=None):
         """
         Parallelize the `candidates` Iterations. In particular:
 
@@ -518,6 +518,7 @@ class PragmaDeviceAwareTransformer(DeviceAwareMixin, PragmaShmTransformer):
         if self._is_offloadable(root):
             body = self.DeviceIteration(gpu_fit=self.gpu_fit,
                                         ncollapse=len(collapsable) + 1,
+                                        qid=qid,
                                         **root.args)
             partree = ParallelTree([], body, nthreads=nthreads)
 

@@ -8,7 +8,8 @@ from devito.data import FULL
 from devito.tools import Pickable, filter_ordered
 
 __all__ = ['WaitLock', 'ReleaseLock', 'WithLock', 'FetchUpdate', 'PrefetchUpdate',
-           'normalize_syncs']
+           'normalize_syncs', 'CudaWaitEvent', 'CudaFireEvent', 'CudaFetchUpdate',
+           'CudaPrefetchUpdate', 'CudaWithEvent']
 
 
 class SyncOp(Pickable):
@@ -107,7 +108,51 @@ class FetchUpdate(SyncCopyIn):
 class PrefetchUpdate(SyncCopyIn):
     pass
 
+class CudaWaitEvent(WithLock):
+    def __init__(self, function, handle, stream = None):
+        super().__init__(function, handle)
+        self.stream = stream
 
+    @property
+    def event(self):
+        return self.handle
+
+class CudaWithEvent(WithLock):
+    def __init__(self, function, handle, stream = None):
+        super().__init__(function, handle)
+        self.stream = stream
+
+    @property
+    def event(self):
+        return self.handle
+
+class CudaFireEvent(ReleaseLock):
+    def __init__(self, function, handle, stream = None):
+        super().__init__(function, handle)
+        self.stream = stream
+
+    @property
+    def event(self):
+        return self.handle
+    
+class CudaFetchUpdate(FetchUpdate):
+    def __init__(self, function, handle, dim, size, target, tstore, stream=None):
+        super().__init__(function, handle, dim, size, target, tstore)
+        self.stream = stream
+
+    @property
+    def event(self):
+        return self.handle
+    
+class CudaPrefetchUpdate(PrefetchUpdate):
+    def __init__(self, function, handle, dim, size, target, tstore, stream=None):
+        super().__init__(function, handle, dim, size, target, tstore)
+        self.stream = stream
+
+    @property
+    def event(self):
+        return self.handle
+    
 def normalize_syncs(*args):
     if not args:
         return

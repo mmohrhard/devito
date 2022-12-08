@@ -6,7 +6,7 @@ from devito.tools import as_tuple
 
 __all__ = ['ElementalFunction', 'ElementalCall', 'make_efunc', 'make_callable',
            'EntryFunction', 'AsyncCallable', 'AsyncCall', 'ThreadCallable',
-           'DeviceFunction', 'DeviceCall']
+           ]
 
 
 # ElementalFunction machinery
@@ -135,20 +135,4 @@ class ThreadCallable(Callable):
 # DeviceFunction machinery
 
 
-class DeviceFunction(Callable):
 
-    """
-    A Callable executed asynchronously on a device.
-    """
-
-    def __init__(self, name, body, retval='void', parameters=None, prefix='__global__'):
-        super().__init__(name, body, retval, parameters=parameters, prefix=prefix)
-
-
-class DeviceCall(Call):
-
-    """
-    A call to an external function executed asynchronously on a device.
-    """
-
-    pass

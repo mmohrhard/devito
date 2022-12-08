@@ -22,7 +22,8 @@ from devito.types.misc import Pointer, VolatileInt
 
 __all__ = ['NThreads', 'NThreadsNested', 'NThreadsNonaffine', 'NThreadsBase',
            'DeviceID', 'ThreadID', 'Lock', 'PThreadArray', 'SharedData',
-           'NPThreads', 'DeviceRM', 'UpdateHost', 'DevicePointer', 'QueueID']
+           'NPThreads', 'DeviceCreate', 'DeviceRM', 'UpdateHost', 'UpdateDevice',
+           'DevicePointer', 'QueueID', 'CudaEvent']
 
 
 class NThreadsBase(Scalar):
@@ -230,7 +231,32 @@ class Lock(Array):
     def locked_dimensions(self):
         return set().union(*[d._defines for d in self.dimensions])
 
+import ctypes
+class cudaEvent_t(ctypes.Structure):
+    pass
 
+class cudaStream_t(ctypes.Structure):
+    pass
+
+c_cudaEvent_p = ctypes.POINTER(cudaEvent_t)
+
+class CudaEvent(Scalar):
+
+    def __init__(self, name):
+        super().__init__(name=name, dtype=c_void_p)
+
+    @property
+    def _C_typename(self):
+        return "cudaEvent_t"
+    
+class CudaStream(Scalar):
+    def __init__(self, name):
+        super().__init__(name=name, dtype=c_void_p)
+
+    @property
+    def _C_typename(self):
+        return "cudaStream_t"
+    
 class DeviceSymbol(Scalar):
 
     is_Input = True
@@ -253,6 +279,22 @@ class DeviceID(DeviceSymbol):
     @property
     def default_value(self):
         return -1
+
+
+class DeviceCreate(DeviceSymbol):
+
+    name = 'devicecreate'
+
+    @property
+    def default_value(self):
+        return 1
+
+    def _arg_values(self, **kwargs):
+        try:
+            # Enforce 1 or 0
+            return {self.name: int(bool(kwargs[self.name]))}
+        except KeyError:
+            return self._arg_defaults()
 
 
 class DeviceRM(DeviceSymbol):
@@ -284,6 +326,22 @@ class UpdateHost(DeviceSymbol):
             return {self.name: int(bool(kwargs[self.name]))}
         except KeyError:
             return self._arg_defaults()
+
+class UpdateDevice(DeviceSymbol):
+
+    name = 'updatedevice'
+
+    @property
+    def default_value(self):
+        return 1
+
+    def _arg_values(self, **kwargs):
+        try:
+            # Enforce 1 or 0
+            return {self.name: int(bool(kwargs[self.name]))}
+        except KeyError:
+            return self._arg_defaults()
+
 
 class QueueID(Symbol):
 

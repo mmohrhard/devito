@@ -1,6 +1,7 @@
 from functools import singledispatch
 
 import numpy as np
+from devito.ir.iet.cuda import CudaCallable
 
 from devito.data import FULL
 from devito.ir import (BlankLine, Call, DummyExpr, Dereference, List, PointerCast,
@@ -28,7 +29,7 @@ def linearize(graph, **kwargs):
     linearization(graph, track=track, **kwargs)
 
     # Sanity check
-    assert all(not v.held for v in track.values())
+    assert all(not v.held or len(v.held) == 0 for v in track.values())
 
 
 @iet_pass
@@ -135,7 +136,7 @@ def linearize_accesses(iet, key, track, sregistry):
         release = calls & v.held
         v.held.difference_update(release)
         if f in candidates or release:
-            if f in defines:
+            if f in defines and not isinstance(iet, CudaCallable):
                 stmts0.extend(v.stmts0)
                 stmts1.extend(v.stmts1)
             else:

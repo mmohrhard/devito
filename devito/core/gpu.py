@@ -5,11 +5,12 @@ import numpy as np
 from devito.core.operator import CoreOperator, CustomOperator, ParTile
 from devito.exceptions import InvalidOperator
 from devito.passes.equations import collect_derivatives
-from devito.passes.clusters import (Lift, Streaming, Tasker, blocking, buffering,
+from devito.passes.clusters import (Lift, CudaTasker, CudaStreaming, Streaming, Tasker, blocking, buffering,
                                     cire, cse, factorize, fission, fuse,
                                     optimize_pows)
 from devito.passes.iet import (DeviceOmpTarget, DeviceAccTarget, DeviceCudaTarget, mpiize, hoist_prodders,
-                               is_on_device, linearize, pthreadify, relax_incr_dimensions)
+                               is_on_device, linearize, pthreadify, relax_incr_dimensions, cuda_eventify)
+
 from devito.tools import as_tuple, timed_pass
 
 __all__ = ['DeviceNoopOperator', 'DeviceAdvOperator', 'DeviceCustomOperator',
@@ -124,7 +125,7 @@ class DeviceOperatorMixin(object):
 
     @classmethod
     def _normalize_gpu_fit(cls, **kwargs):
-        if any(i in kwargs['mode'] for i in ['tasking', 'streaming']):
+        if any(i in kwargs['mode'] for i in ['tasking', 'streaming', 'cuda-tasking', 'cuda-streaming']):
             return None
         else:
             return cls.GPU_FIT
@@ -273,7 +274,9 @@ class DeviceCustomOperator(DeviceOperatorMixin, CustomOperator):
             'buffering': lambda i: buffering(i, callback, sregistry, options),
             'blocking': lambda i: blocking(i, sregistry, options),
             'tasking': Tasker(runs_on_host, sregistry).process,
+            'cuda-tasking': CudaTasker(runs_on_host, sregistry).process,
             'streaming': Streaming(reads_if_on_host, sregistry).process,
+            'cuda-streaming': CudaStreaming(reads_if_on_host, sregistry).process,
             'factorize': factorize,
             'fission': fission,
             'fuse': lambda i: fuse(i, options=options),
@@ -299,6 +302,7 @@ class DeviceCustomOperator(DeviceOperatorMixin, CustomOperator):
             'parallel': parizer.make_parallel,
             'orchestrate': partial(orchestrator.process),
             'pthreadify': partial(pthreadify, sregistry=sregistry),
+            'cuda-events': partial(cuda_eventify, sregistry=sregistry),
             'mpi': partial(mpiize, **kwargs),
             'linearize': partial(linearize, mode=options['linearize'],
                                  sregistry=sregistry),
@@ -444,10 +448,17 @@ class DeviceCustomCudaOperator(DeviceCudaOperatorMixin, DeviceCustomOperator):
     @classmethod
     def _make_iet_passes_mapper(cls, **kwargs):
         mapper = super()._make_iet_passes_mapper(**kwargs)
-        mapper['cuda'] = mapper['parallel']
+        mapper['cuda'] = mapper['parallel']        
+        mapper['pthreadify'] = mapper['cuda-events']
         return mapper
 
-    _known_passes = DeviceCustomOperator._known_passes + ('cuda',)
+    @classmethod
+    def _make_clusters_passes_mapper(cls, **kwargs):
+        mapper = super()._make_clusters_passes_mapper(**kwargs)
+        mapper['streaming'] = mapper['cuda-streaming']
+        return mapper
+    
+    _known_passes = DeviceCustomOperator._known_passes + ('cuda', 'cuda-events', 'cuda-streaming', 'cuda-tasking')
     assert not (set(_known_passes) & set(DeviceCustomOperator._known_passes_disabled))
 
 

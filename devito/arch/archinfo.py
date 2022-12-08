@@ -21,7 +21,7 @@ __all__ = ['platform_registry', 'get_cpu_info', 'get_gpu_info', 'get_nvidia_cc',
            'INTEL64', 'SNB', 'IVB', 'HSW', 'BDW', 'SKX', 'KNL', 'KNL7210',  # Intel
            'AMD', 'ARM', 'M1',  # ARM
            'POWER8', 'POWER9',  # Other loosely supported CPU architectures
-           'AMDGPUX', 'NVIDIAX', 'INTELGPUX']  # GPUs
+           'AMDGPUX', 'NVIDIAX', 'CUDA', 'INTELGPUX']  # GPUs
 
 
 @memoized_func
@@ -728,6 +728,7 @@ POWER9 = Power('power9')
 
 # Devices
 NVIDIAX = NvidiaDevice('nvidiaX')
+CUDA = NvidiaDevice('cuda')
 AMDGPUX = AmdDevice('amdgpuX')
 INTELGPUX = IntelDevice('intelgpuX')
 
@@ -750,6 +751,7 @@ platform_registry = {
     'power8': POWER8,
     'power9': POWER9,
     'nvidiaX': NVIDIAX,  # Generic NVidia GPU
+    'cuda': CUDA,
     'amdgpuX': AMDGPUX,   # Generic AMD GPU
     'intelgpuX': INTELGPUX   # Generic Intel GPU
 }

@@ -6,12 +6,13 @@ from cached_property import cached_property
 import numpy as np
 import sympy
 
+from devito.logger import (explain, SHOULD_EXPLAIN_OPTS);
 from devito.finite_differences import EvalDerivative
 from devito.ir import (SEQUENTIAL, PARALLEL_IF_PVT, ROUNDABLE, SEPARABLE, Forward,
                        IterationInstance, IterationSpace, Interval, Cluster,
                        Queue, IntervalGroup, LabeledVector, normalize_properties,
                        relax_properties)
-from devito.symbolics import (Uxmapper, compare_ops, estimate_cost, q_constant,
+from devito.symbolics import (Uxmapper, compare_ops, estimate_cost, q_constant, q_xop,
                               reuse_if_untouched, retrieve_indexed, search, uxreplace)
 from devito.tools import (Stamp, as_mapper, as_tuple, flatten, frozendict, generator,
                           split, timed_pass)
@@ -479,6 +480,14 @@ def collect(extracted, ispace, minstorage):
             unseen.remove(u)
         group = Group(group)
 
+        if SHOULD_EXPLAIN_OPTS:
+            explain(f"New alias group")
+            explain(f" = Parent: {c}")
+            for z in group:
+                if z != c:
+                    explain(f" === Child: {z}")
+            explain(f"dimensions: {group.dimensions}, translated: {group.dimensions_translated}")
+
         if minstorage:
             k = group.dimensions_translated
         else:
@@ -585,6 +594,11 @@ def choose(aliases, exprs, mapper, mingain):
 
     # Filter off the aliases with low score
     key = lambda a: a.score >= m
+    if SHOULD_EXPLAIN_OPTS:
+        for alias in aliases:
+            if not key(alias):
+                explain(f"excluded alias {alias} early with score {alias.score} < min {m}")
+
     aliases.filter(key)
 
     # Project the candidate aliases into `exprs` to derive the final working set
@@ -596,6 +610,17 @@ def choose(aliases, exprs, mapper, mingain):
     key = lambda a: \
         a.score > M or \
         m <= a.score <= M and max(len(wset(a.pivot)), 1) > len(wset(a.pivot) & owset)
+    
+    if SHOULD_EXPLAIN_OPTS:
+        for alias in aliases:
+            if alias.score > M:
+                explain(f"included alias {alias} due to score {alias.score} exceeding {M}")
+            else:
+                pslen = max(len(wset(alias.pivot)), 1)
+                pslen2 = len(wset(alias.pivot) & owset)
+                mode = "included" if pslen > pslen2 else "excluded"
+                explain(f"{mode} alias {alias} due to max working set length {pslen} versus filtered working set size {pslen2}")
+
     aliases.filter(key)
 
     if not aliases:

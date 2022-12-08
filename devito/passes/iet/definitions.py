@@ -5,18 +5,24 @@ of symbols and data.
 
 from collections import OrderedDict
 from functools import singledispatch
+from devito.ir.equations.equation import DummyEq
+from devito.ir.iet.nodes import CLiteral, Conditional
+import cgen as c
+from devito.logger import info, warning
 from operator import itemgetter
+from devito.types.parallel import DeviceCreate, UpdateDevice
 
 import numpy as np
 
 from devito.ir import (Block, Call, Definition, DeviceCall, DeviceFunction,
                        DummyExpr, Return, EntryFunction, FindSymbols, MapExprStmts,
-                       Transformer, make_callable)
+                       Transformer, make_callable, List)
 from devito.passes.iet.engine import iet_pass, iet_visit
 from devito.passes.iet.langbase import LangBB
 from devito.passes.iet.misc import is_on_device
 from devito.symbolics import (Byref, DefFunction, FieldFromPointer, IndexedPointer,
-                              ListInitializer, SizeOf, VOID, Keyword, ccode)
+                              ListInitializer, SizeOf, VOID, Keyword, ccode,
+                               CondEq, CondNe, CondOr)
 from devito.tools import as_mapper, as_tuple, filter_sorted, flatten
 from devito.types import DeviceRM, UpdateHost, Symbol
 from devito.types.dense import AliasFunction
@@ -145,8 +151,8 @@ class DataManager(object):
         """
         Allocate a mapped Array in the host high bandwidth memory.
         """
-        decl = Definition(obj)
-
+        static_decl = Definition(obj, initvalue="nullptr", prefix="static")
+        decl = Definition(obj, initvalue="nullptr")
         # Allocating a mapped Array on the high bandwidth memory requires
         # multiple statements, hence we implement it as a generic Callable
         # to minimize code size, since different arrays will ultimately be
@@ -165,24 +171,28 @@ class DataManager(object):
         alloc1 = self.lang['host-alloc'](memptr, alignment, nbytes_param)
 
         ffp0 = FieldFromPointer(obj._C_field_nbytes, obj._C_symbol)
-        init = DummyExpr(ffp0, nbytes_param)
+        init0 = DummyExpr(ffp0, nbytes_param)
+        init1 = DummyExpr(ffp1, 0)
 
         free0 = self.lang['host-free'](ffp1)
 
-        free1 = self.lang['host-free'](obj._C_symbol)
+        free2 = self.lang['host-free'](obj._C_symbol)
 
         ret = Return(obj._C_symbol)
 
-        name = self.sregistry.make_name(prefix='alloc')
-        body = (decl, alloc0, alloc1, init, ret)
-        efunc0 = make_callable(name, body, retval=obj._C_typename)
+        alloc_name = self.sregistry.make_name(prefix='alloc')
+        body = (decl, alloc0, init0, init1, alloc1, ret)
+        #body = (decl, alloc0, alloc1, init, ret)
+        efunc0 = make_callable(alloc_name, body, retval=obj._C_typename)
         assert len(efunc0.parameters) == 1  # `nbytes_param`
-        alloc = Call(name, nbytes_arg, retobj=obj)
 
-        name = self.sregistry.make_name(prefix='free')
-        efunc1 = make_callable(name, (free0, free1))
+        free_name = self.sregistry.make_name(prefix='free')
+        efunc1 = make_callable(free_name, (free0, free2))
+        #efunc1 = make_callable(name, (free0, free2))
         assert len(efunc1.parameters) == 1  # `obj`
-        free = Call(name, obj)
+        alloc = Call(alloc_name, nbytes_arg, retobj=obj)
+        
+        free = Call(free_name, obj)
 
         storage.update(obj, site, allocs=alloc, frees=free, efuncs=(efunc0, efunc1))
 
@@ -373,20 +383,25 @@ class DeviceAwareDataManager(DataManager):
         super().__init__(sregistry)
         self.gpu_fit = options['gpu-fit']
 
-    def _alloc_local_array_on_high_bw_mem(self, site, obj, storage):
+    def _alloc_local_array_on_high_bw_mem(self, site, obj, storage, devicerm=None):
         """
         Allocate a local Array in the device high bandwidth memory.
         """
         deviceid = DefFunction(self.lang['device-get'].name)
+        decl = Definition(obj, initvalue="nullptr")
         doalloc = self.lang['device-alloc']
         dofree = self.lang['device-free']
 
         nbytes = SizeOf(obj._C_typedata)*obj.size
         init = doalloc(nbytes, deviceid, retobj=obj)
+        allocs = (init, ) if isinstance(init, Call) and init.retobj == obj else (decl, init)
 
         free = dofree(obj._C_name, deviceid)
 
-        storage.update(obj, site, allocs=init, frees=free)
+        
+        free = Conditional(DeviceRM(), free)
+
+        storage.update(obj, site, allocs=allocs, frees=free)
 
     def _map_array_on_high_bw_mem(self, site, obj, storage):
         """
@@ -397,12 +412,12 @@ class DeviceAwareDataManager(DataManager):
         if not obj._mem_mapped:
             return
 
-        mmap = self.lang._map_alloc(obj)
-        unmap = self.lang._map_delete(obj)
+        mmap = None# self.lang._map_alloc(obj)
+        unmap = None#self.lang._map_delete(obj)
 
         storage.update(obj, site, maps=mmap, unmaps=unmap)
 
-    def _map_function_on_high_bw_mem(self, site, obj, storage, devicerm, read_only=False, updatehost=None):
+    def _map_function_on_high_bw_mem(self, site, obj, storage, devicerm, read_only=False, devicecreate=None, updatehost=None, updatedevice=None):
         """
         Map a Function already defined in the host memory in to the device high
         bandwidth memory.
@@ -413,7 +428,11 @@ class DeviceAwareDataManager(DataManager):
         `_map_array_on_high_bw_mem` is that the former triggers a data transfer to
         synchronize the host and device copies, while the latter does not.
         """
-        mmap = self.lang._map_to(obj)
+        if devicecreate:
+            mmap = [self.lang._map_alloc(obj, condition=devicecreate),
+                    self.lang._map_update_device(obj, condition=updatedevice)]
+        else:
+            mmap = self.lang._map_to(obj)
 
         if read_only is False:
             unmap = [self.lang._map_update_host(obj, condition=updatehost),
@@ -482,19 +501,21 @@ class DeviceAwareDataManager(DataManager):
             writes = set(flatten(writes))
 
             # Special symbol which gives user code control over data deallocations
+            devicecreate = DeviceCreate()
             devicerm = DeviceRM()
             updatehost = UpdateHost()
+            updatedevice = UpdateDevice()
             storage = Storage()
             for i in filter_sorted(writes):
                 if i.is_Array:
                     self._map_array_on_high_bw_mem(iet, i, storage)
                 else:
-                    self._map_function_on_high_bw_mem(iet, i, storage, devicerm, updatehost = updatehost)
+                    self._map_function_on_high_bw_mem(iet, i, storage, devicerm, devicecreate = devicecreate, updatehost = updatehost, updatedevice = updatedevice)
             for i in filter_sorted(reads - writes):
                 if i.is_Array:
                     self._map_array_on_high_bw_mem(iet, i, storage)
                 else:
-                    self._map_function_on_high_bw_mem(iet, i, storage, devicerm, True)
+                    self._map_function_on_high_bw_mem(iet, i, storage, devicerm, True, devicecreate = devicecreate, updatehost = updatehost, updatedevice = updatedevice)
 
             iet = self._dump_transfers(iet, storage)
 

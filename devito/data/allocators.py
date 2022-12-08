@@ -4,6 +4,7 @@ from operator import mul
 import mmap
 import os
 import sys
+from devito.logger import warning, info, debug
 
 import numpy as np
 import ctypes
@@ -14,6 +15,7 @@ from devito.tools import dtype_to_ctype
 
 __all__ = ['ALLOC_FLAT', 'ALLOC_NUMA_LOCAL', 'ALLOC_NUMA_ANY',
            'ALLOC_KNL_MCDRAM', 'ALLOC_KNL_DRAM', 'ALLOC_GUARD',
+           'ALLOC_CUDA_DEVICE', 'ALLOC_CUDA_SHARED', 'ALLOC_CUDA_HOST',
            'default_allocator']
 
 
@@ -377,21 +379,45 @@ class CudaAllocator(MemoryAllocator):
         except OSError:
             cls.lib = None
     
+    def __init__(self, type='host'):
+        self.type = type
+        
     def _alloc_C_libcall(self, size, ctype):
         if not self.available():
             raise RuntimeError("Couldn't find `libcuda`'s `cudaMallocHost` to "
                                "allocate memory")
         c_bytesize = ctypes.c_ulong(size * ctypes.sizeof(ctype))
+        
         c_pointer = ctypes.cast(ctypes.c_void_p(), ctypes.c_void_p)
         
-        ret = self.lib.cudaMallocHost(ctypes.byref(c_pointer), c_bytesize)
-        if ret == 0:
-            return c_pointer, (c_pointer, )
+        if self.type == 'host':
+            ret = self.lib.cudaMallocHost(ctypes.byref(c_pointer), c_bytesize)
+        elif self.type == 'device':
+            ret = self.lib.cudaMalloc(ctypes.byref(c_pointer), c_bytesize)
+        elif self.type == 'shared':
+            ret = self.lib.cudaMallocManaged(ctypes.byref(c_pointer), c_bytesize, 0x1)
         else:
-            return None, None
+            raise RuntimeError(f"Invalid CUDA allocation type '{self.type}'")    
 
-    def free(self, c_pointer):
-        self.lib.cudaFreeHost(c_pointer)
+        if ret == 0:
+            return c_pointer, (c_pointer, c_bytesize, self.type)
+        else:
+            err = self.lib.cudaGetLastError()
+            raise RuntimeError(f"CUDA allocation failed: {self.lib.cudaGetErrorName(err)} - {self.lib.cudaGetErrorString(err)}")            
+
+    def free(self, c_pointer, c_bytesize, type):
+        debug("CUDA freeing 0x%lx bytes of memory at 0x%lx" % (c_bytesize.value, c_pointer.value))
+        if self.type == 'host':
+            self.lib.cudaFreeHost(c_pointer)
+        elif self.type in ['device', 'shared']:
+            self.lib.cudaFree(c_pointer)
+        else:
+            raise RuntimeError(f"invalid CUDA allocation type {self.type}")
+        
+    def __str__(self):
+        return "%s(%s)" % (self.__class__.__name__, self.type)
+    
+    __repr__ = __str__
 
 ALLOC_GUARD = GuardAllocator(1048576)
 ALLOC_FLAT = PosixAllocator()
@@ -399,7 +425,9 @@ ALLOC_KNL_DRAM = NumaAllocator(0)
 ALLOC_KNL_MCDRAM = NumaAllocator(1)
 ALLOC_NUMA_ANY = NumaAllocator('any')
 ALLOC_NUMA_LOCAL = NumaAllocator('local')
-ALLOC_CUDA = CudaAllocator()
+ALLOC_CUDA_DEVICE = CudaAllocator('device')
+ALLOC_CUDA_SHARED = CudaAllocator('shared')
+ALLOC_CUDA_HOST = CudaAllocator('host')
 
 custom_allocators = {}
 """User-defined allocators."""
@@ -442,20 +470,29 @@ def default_allocator(name=None):
         * ALLOC_KNL_DRAM: On a Knights Landing platform, allocate memory in DRAM.
         * ALLOC_CUDA: When CUDA is being used, allocate page-locked host memory for
                         faster GPU copies.
+        * ALLOC_CUDA_SHARED: When CUDA is being used, allocate CUDA managed memory
+                        
 
     Custom allocators may be added with `register_allocator`.
     """
     if name is not None:
         try:
+            print ("using " + name + "\n")
             return custom_allocators[name]
         except KeyError:
             pass
     
-    if configuration['platform'].name == 'nvidiaX' and configuration['language'].name == 'cuda':
-        return ALLOC_CUDA
+    print ("allocating for platform " + configuration['platform'].name + " with language " + configuration['language'] + "\n")
+    if configuration['language'] == 'cuda':
+        print("using CUDA allocator by default\n")
+        return ALLOC_CUDA_SHARED
     if configuration['develop-mode']:
         return ALLOC_GUARD
-    elif NumaAllocator.available():
+    
+    if configuration['platform'].name != 'knl':
+        return ALLOC_CUDA_HOST
+    
+    if NumaAllocator.available():
         if configuration['platform'].name == 'knl' and infer_knl_mode() == 'flat':
             return ALLOC_KNL_MCDRAM
         else:

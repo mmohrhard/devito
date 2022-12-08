@@ -272,6 +272,11 @@ class DeviceAwareMixin(object):
                 # Not all target languages need to be explicitly initialized
                 lang_init = []
 
+            try:
+                lang_fini = [self.lang['fini'](devicetype)]
+            except TypeError:
+                lang_fini = []
+
             if objcomm is not None:
                 rank = Symbol(name='rank')
                 rank_decl = DummyExpr(rank, 0)
@@ -300,7 +305,8 @@ class DeviceAwareMixin(object):
                 footer = c.Comment('End of %s setup' % self.lang['name'])
 
             init = List(header=header, body=body, footer=footer)
-            iet = iet._rebuild(body=iet.body._rebuild(init=init))
+            fini = List(body=lang_fini)
+            iet = iet._rebuild(body=iet.body._rebuild(init=init, fini=fini))
 
             return iet, {}
 

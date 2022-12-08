@@ -304,22 +304,35 @@ class Compiler(GCCToolchain):
                                  "the file isn't present" % src_file)
 
         # Should the compilation command be emitted?
-        debug = configuration['log-level'] == 'DEBUG'
+        debug_build = configuration['log-level'] == 'DEBUG'
 
         # Spinlock in case of MPI
         sleep_delay = 0 if configuration['mpi'] else 1
 
+        # if clang-format is on the path, then format the generated code
+        try:
+            from subprocess import run, PIPE
+            p = run(["clang-format"], stdout=PIPE, input=code, encoding='ascii')            
+            if p.returncode == 0:
+                debug("formatted generated code with clang-format")
+                code = p.stdout
+        except OSError:
+            pass
+
+        recompiled = False
         # `catch_warnings` suppresses codepy complaining that it's taking
         # too long to acquire the cache lock. This warning can only appear
         # in a multiprocess session, typically (but not necessarily) when
         # many processes are frequently attempting jit-compilation (e.g.,
         # when running the test suite in parallel)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            _, _, _, recompiled = compile_from_string(self, target, code, src_file,
-                                                      cache_dir=cache_dir, debug=debug,
-                                                      sleep_delay=sleep_delay)
-
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                _, _, _, recompiled = compile_from_string(self, target, code, src_file,
+                                                        cache_dir=cache_dir, debug=debug_build,
+                                                        sleep_delay=sleep_delay)
+        except:
+            pass
         return recompiled, src_file
 
     def __lookup_cmds__(self):

@@ -5,7 +5,7 @@ import sys
 from contextlib import contextmanager
 
 __all__ = ('set_log_level', 'set_log_noperf', 'is_log_enabled_for',
-           'log', 'warning', 'error', 'perf', 'perf_adv',
+           'log', 'warning', 'error', 'perf', 'explain', 'SHOULD_EXPLAIN_OPTS', 'perf_adv',
            'RED', 'GREEN', 'BLUE')
 
 
@@ -15,6 +15,7 @@ stream_handler = logging.StreamHandler()
 # Add extra logging levels (note: INFO has value=20, WARNING has value=30)
 DEBUG = logging.DEBUG
 PERF = logging.INFO
+PERF_EXPLAIN = logging.INFO
 INFO = logging.INFO
 WARNING = logging.WARNING
 ERROR = logging.ERROR
@@ -23,6 +24,7 @@ CRITICAL = logging.CRITICAL
 logger_registry = {
     'DEBUG': DEBUG,
     'PERF': PERF,
+    'PERF_EXPLAIN': PERF_EXPLAIN,
     'INFO': INFO,
     'WARNING': WARNING,
     'ERROR': ERROR,
@@ -37,12 +39,14 @@ GREEN = '\033[1;37;32m%s\033[0m'
 COLORS = {
     DEBUG: NOCOLOR,
     PERF: GREEN,
+    PERF_EXPLAIN: GREEN,
     INFO: NOCOLOR,
     WARNING: BLUE,
     ERROR: RED,
     CRITICAL: RED
 }
 
+SHOULD_EXPLAIN_OPTS = False
 
 def _set_log_level(level):
     """
@@ -114,6 +118,8 @@ def log(msg, level=INFO, *args, **kwargs):
 def info(msg, *args, **kwargs):
     log(msg, INFO, *args, **kwargs)
 
+def explain(msg, *args, **kwargs):
+    log(msg, PERF, *args, **kwargs)
 
 def perf(msg, *args, **kwargs):
     log(msg, PERF, *args, **kwargs)

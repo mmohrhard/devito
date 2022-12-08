@@ -1,7 +1,7 @@
 from collections import Counter, OrderedDict, namedtuple
 from functools import partial, wraps
 
-from devito.ir.iet import (Call, FindNodes, FindSymbols, MetaCall, Transformer,
+from devito.ir.iet import (Call, CudaCallable, FindNodes, FindSymbols, MetaCall, Transformer,
                            EntryFunction, ThreadCallable, Uxreplace,
                            derive_parameters)
 from devito.tools import DAG, as_tuple, filter_ordered, timed_pass
@@ -186,6 +186,11 @@ def reuse_efuncs(root, efuncs):
     mapper = {}
     for i in dag.topological_sort():
         if i == root.name:
+            continue
+
+        # For now, we keep all GPU kernels
+        if isinstance(efuncs[i], CudaCallable):
+            mapper[efuncs[i]._signature()] = (efuncs[i], [efuncs[i]])
             continue
 
         efunc = efuncs[i]

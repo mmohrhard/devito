@@ -1,5 +1,5 @@
 from collections import namedtuple
-from ctypes import POINTER, Structure, c_int, c_ulong, c_void_p, cast, byref
+from ctypes import POINTER, Structure, c_int, c_ulong, c_void_p, cast, byref, addressof
 from functools import wraps, reduce
 from math import ceil
 from operator import mul
@@ -83,6 +83,9 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         self._data = None
         self._first_touch = kwargs.get('first_touch', configuration['first-touch'])
         self._allocator = kwargs.get('allocator') or default_allocator()
+        self._device_allocator = kwargs.get('device_allocator' or None)
+        self._device_data_ptr = c_restrict_void_p(0)
+        self._device_data = None
         initializer = kwargs.get('initializer')
         if initializer is None or callable(initializer):
             # Initialization postponed until the first access to .data
@@ -103,6 +106,13 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
             raise ValueError("`initializer` must be callable or buffer, not %s"
                              % type(initializer))
 
+    def __del__(self):
+        pass
+        # if self._device_allocator and self._device_data_ptr.value != 0:
+        #     debug("Freeing device memory for %s%s [%s] at %lx" % (self.name, self.shape_allocated, humanbytes(self.nbytes), self._device_data_ptr.value))
+        #     self._device_allocator.free(self._device_data_alloc_args)
+        #     self._device_data_ptr = c_restrict_void_p(0)
+
     def __eq__(self, other):
         # The only possibility for two DiscreteFunctions to be considered equal
         # is that they are indeed the same exact object
@@ -112,6 +122,11 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         return id(self)
 
     _subs = Differentiable._subs
+
+    # Device needs an update
+    _host_dirty = False
+    # Host needs an update
+    _device_dirty = False
 
     def _allocate_memory(func):
         """Allocate memory as a Data."""
@@ -127,7 +142,13 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                                             allocator=self._allocator,
                                             distributor=self._distributor)
 
-                debug("data object created")
+                if self._device_allocator:
+                    debug("Allocating device memory for %s%s [%s]" % (self.name, self.shape_allocated, humanbytes(self.nbytes)))
+                    self._device_data, self._device_data_alloc_args = self._device_allocator.alloc(self.shape_allocated, self.dtype)
+                    self._device_data_ptr = self._device_data.ctypes.data_as(c_restrict_void_p)
+                    debug("done!")
+
+                debug("Memory is 0x%lx bytes at 0x%lx on the host, and 0x%lx on the device" % (self.nbytes, self._data.ctypes.data_as(c_restrict_void_p).value, self._device_data_ptr.value or 0))
 
                 # Initialize data
                 if self._first_touch:
@@ -462,6 +483,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         return self.data._gather(start=start, stop=stop, step=step, rank=rank)
 
     def _mark_halo_dirty(self):
+        self._ensure_host_update()
+
         if not self._is_halo_dirty:
             info("marking %s dirty", str(self))
             from traceback import extract_stack
@@ -470,6 +493,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                 for fs in extract_stack()[-2::-1]
             ]
         self._is_halo_dirty = True
+        self._device_dirty = True
 
     @property
     @_allocate_memory
@@ -587,12 +611,22 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
             for d, s, (pl, pr)
             in zip(self.dimensions, self.shape_allocated, self._padding)
         ]
+        self._ensure_host_update()
         return np.asarray(self._data[index_array])
+
+    def _ensure_host_update(self):
+        if self._host_dirty and self._device_data_ptr != c_restrict_void_p(0):
+            # update the host
+            pass
+
+        self._host_dirty = False
 
     @property
     @_allocate_memory
     def data_ro_domain(self):
         """Read-only view of the domain data values."""
+        self._ensure_host_update()
+
         view = self._data._global(self._mask_domain, self._decomposition)
         view.setflags(write=False)
         return view
@@ -601,6 +635,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     @_allocate_memory
     def data_ro_with_halo(self):
         """Read-only view of the domain+outhalo data values."""
+        self._ensure_host_update()
+
         view = self._data._global(self._mask_outhalo, self._decomposition_outhalo)
         view.setflags(write=False)
         return view
@@ -617,6 +653,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         -----
         This accessor does *not* support global indexing.
         """
+        self._ensure_host_update()
         view = self._data[self._mask_inhalo]
         view.setflags(write=False)
         return np.asarray(view)
@@ -631,6 +668,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         -----
         This accessor does *not* support global indexing.
         """
+        self._ensure_host_update()
         view = self._data
         view.setflags(write=False)
         return np.asarray(view)
@@ -675,6 +713,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
 
     _C_structname = 'dataobj'
     _C_field_data = 'data'
+    _C_field_device_data = 'device_data'
+    _C_field_operator_allocated = 'operator_allocated'
     _C_field_size = 'size'
     _C_field_nopad_size = 'npsize'
     _C_field_domain_size = 'dsize'
@@ -685,6 +725,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
 
     _C_ctype = POINTER(type(_C_structname, (Structure,),
                             {'_fields_': [(_C_field_data, c_restrict_void_p),
+                                          (_C_field_device_data, c_restrict_void_p),
+                                          (_C_field_operator_allocated, c_int),
                                           (_C_field_size, POINTER(c_ulong)),
                                           (_C_field_nopad_size, POINTER(c_ulong)),
                                           (_C_field_domain_size, POINTER(c_ulong)),
@@ -693,13 +735,15 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                                           (_C_field_owned_ofs, POINTER(c_int)),
                                           (_C_field_dmap, c_void_p)]}))
 
-    def _C_make_dataobj(self, data):
+    def _C_make_dataobj(self, data, device_data=None):
         """
         A ctypes object representing the DiscreteFunction that can be passed to
         an Operator.
         """
         dataobj = byref(self._C_ctype._type_())
         dataobj._obj.data = data.ctypes.data_as(c_restrict_void_p)
+        dataobj._obj.device_data = device_data.ctypes.data_as(c_restrict_void_p) if device_data is not None else c_restrict_void_p(0)
+        dataobj._obj.operator_allocated = 1 if dataobj._obj.device_data == c_restrict_void_p(0) else 0
         dataobj._obj.size = (c_ulong*self.ndim)(*data.shape)
         # MPI-related fields
         dataobj._obj.npsize = (c_ulong*self.ndim)(*[i - sum(j) for i, j in
@@ -715,6 +759,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         # stash a reference to the array on _obj, so we don't let it get freed
         # while we hold onto _obj
         dataobj._obj.underlying_array = data
+        dataobj._obj.underlying_device_array = device_data
 
         return dataobj
 
@@ -840,8 +885,12 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     @property
     def _arg_names(self):
         """Tuple of argument names introduced by this function."""
-        return (self.name,)
+        return (self.name,self.device_name,)
 
+    @property
+    def device_name(self):
+        return "_device_data_" + self.name
+    
     def _arg_defaults(self, alias=None):
         """
         A map of default argument values defined by this symbol.
@@ -852,7 +901,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
             To bind the argument values to different names.
         """
         key = alias or self
-        args = ReducerMap({key.name: self._data_buffer})
+        args = ReducerMap({key.name: self._data_buffer, key.device_name: self._device_data})
 
         # Collect default dimension arguments from all indices
         for i, s in zip(key.dimensions, self.shape):
@@ -879,7 +928,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                 values = new._arg_defaults(alias=self).reduce_all()
             else:
                 # We've been provided a pure-data replacement (array)
-                values = {self.name: new}
+                values = {self.name: new, self.device_name: None}
                 # Add value overrides for all associated dimensions
                 for i, s in zip(self.dimensions, new.shape):
                     size = s - sum(self._size_nodomain[i])
@@ -913,9 +962,35 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         for i, s in zip(self.dimensions, key.shape):
             i._arg_check(args, s, intervals[i])
 
+    
     def _arg_finalize(self, args, alias=None):
         key = alias or self
-        return {key.name: self._C_make_dataobj(args[key.name])}
+        
+        if self._device_allocator:
+            if self._device_data is None or self._device_data.shape != args[key.name].shape:
+                self._device_data = None
+                (self._device_data, self._device_data_alloc_args) = self._device_allocator.alloc(args[key.name].shape, self.dtype)
+
+        v = {key.name: self._C_make_dataobj(args[key.name], self._device_data)}
+
+        addr = v[key.name]._obj.data.value
+        addr_4koff = addr % 4096
+        addr_64 = (addr - (addr % 64))
+        addr_l1 = (addr_64 >> 7) % int(32768 / 64)
+        import os
+        if os.environ.get("DEVITO_VERBOSE_MEMORY_ALLOCATIONS", "0") == "1":
+            if self._device_data is not None: 
+                info("%s: device data is at %lx", key.name, self._device_data.ctypes.data_as(c_restrict_void_p).value)
+            info("%s %s: host %lx device %lx, 4k offset %lx, L1 cacheline est. %lx, data shape: %s, device data shape: %s", 
+                key.name, 
+                "(aliased)" if alias is not None else "", 
+                v[key.name]._obj.data.value, 
+                v[key.name]._obj.device_data.value or 0, 
+                addr_4koff, 
+                addr_l1,
+                str(args[key.name].shape),
+                str(self._device_data.shape) if self._device_data is not None else "none")
+        return v
 
 
 class Function(DiscreteFunction):

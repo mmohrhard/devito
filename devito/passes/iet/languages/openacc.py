@@ -1,4 +1,8 @@
 import cgen as c
+from devito.ir.iet.nodes import Section, SyncSpot
+from devito.ir.support.syncs import WaitLock
+from devito.tools.utils import flatten
+from devito.types.parallel import QueueID
 import numpy as np
 
 from devito.arch import AMDGPUX, NVIDIAX
@@ -27,7 +31,7 @@ class DeviceAccIteration(ParallelIteration):
         return 'acc parallel loop'
 
     @classmethod
-    def _make_clauses(cls, ncollapse=None, reduction=None, tile=None, **kwargs):
+    def _make_clauses(cls, ncollapse=None, reduction=None, tile=None, qid=None, **kwargs):
         clauses = []
 
         if ncollapse:
@@ -51,6 +55,9 @@ class DeviceAccIteration(ParallelIteration):
 
         if deviceptrs:
             clauses.append("deviceptr(%s)" % ",".join(deviceptrs))
+
+        if qid:
+            clauses.append("async(%s)" % qid)
 
         return clauses
 
@@ -94,6 +101,8 @@ class AccBB(PragmaLangBB):
              c.Pragma('acc wait(%s)' % k)),
         'map-enter-alloc': lambda i, j:
             c.Pragma('acc enter data create(%s%s)' % (i, j)),
+        'map-enter-alloc-if': lambda i, j, k:
+            c.Pragma('acc enter data create(%s%s) if(%s)' % (i, j, k)),
         'map-present': lambda i, j:
             c.Pragma('acc data present(%s%s)' % (i, j)),
         'map-wait': lambda i:
@@ -110,6 +119,8 @@ class AccBB(PragmaLangBB):
             c.Pragma('acc update self(%s%s) async(%s) if(%s)' % (i, j, k, l)),
         'map-update-device': lambda i, j:
             c.Pragma('acc update device(%s%s)' % (i, j)),
+        'map-update-device-if': lambda i, j, k:
+            c.Pragma('acc update device(%s%s) if(%s)' % (i, j, k)),
         'map-update-device-async': lambda i, j, k:
             c.Pragma('acc update device(%s%s) async(%s)' % (i, j, k)),
         'map-update-device-async-if': lambda i, j, k, l:
@@ -118,10 +129,14 @@ class AccBB(PragmaLangBB):
             c.Pragma('acc exit data delete(%s%s)' % (i, j)),
         'map-release-if': lambda i, j, k:
             c.Pragma('acc exit data delete(%s%s) if(%s)' % (i, j, k)),
+
+        # OpenACC reference count semantics means that 'delete' vs 'release' really just
+        # maps to delete with the finalize flag that forces the refcount to zero
         'map-exit-delete': lambda i, j:
-            c.Pragma('acc exit data delete(%s%s)' % (i, j)),
+            c.Pragma('acc exit data delete(%s%s) finalize' % (i, j)),
         'map-exit-delete-if': lambda i, j, k:
-            c.Pragma('acc exit data delete(%s%s) if(%s)' % (i, j, k)),
+            c.Pragma('acc exit data delete(%s%s) if(%s) finalize' % (i, j, k)),
+            
         'memcpy-to-device': lambda i, j, k:
             Call('acc_memcpy_to_device', [i, j, k]),
         'memcpy-to-device-wait': lambda i, j, k, l:
@@ -153,11 +168,25 @@ class AccBB(PragmaLangBB):
         return Pragma(cls.mapper['map-wait'], qid)
 
     @classmethod
+    def _map_alloc(cls, f, imask=None, condition=None):
+        if condition:
+            return PragmaTransfer(cls.mapper['map-enter-alloc-if'], f, imask, condition)
+        else:
+            return PragmaTransfer(cls.mapper['map-enter-alloc'], f, imask)
+
+    @classmethod
     def _map_update_host(cls, f, imask=None, condition=None):
         if condition:
             return PragmaTransfer(cls.mapper['map-update-host-if'], f, imask, condition)
         else:
             return PragmaTransfer(cls.mapper['map-update-host'], f, imask)
+
+    @classmethod
+    def _map_update_device(cls, f, imask=None, condition=None):
+        if condition:
+            return PragmaTransfer(cls.mapper['map-update-device-if'], f, imask, condition)
+        else:
+            return PragmaTransfer(cls.mapper['map-update-device'], f, imask)
 
     @classmethod
     def _map_delete(cls, f, imask=None, devicerm=None):
@@ -190,15 +219,25 @@ class AccBB(PragmaLangBB):
 
 class DeviceAccizer(PragmaDeviceAwareTransformer):
 
+    async_queue_id = 100
+
+    default_qid: int
+
+    def __init__(self, sregistry, options, platform, compiler):
+        super().__init__(sregistry, options, platform, compiler)
+        self.default_qid = DeviceAccizer.async_queue_id
+        DeviceAccizer.async_queue_id = DeviceAccizer.async_queue_id + 1
+
     lang = AccBB
 
-    def _make_partree(self, candidates, nthreads=None):
+    def _make_partree(self, candidates, nthreads=None, section=None):
         assert candidates
 
         root, collapsable = self._select_candidates(candidates)
         ncollapsable = len(collapsable)
 
-        if self._is_offloadable(root) and \
+        offloadable = self._is_offloadable(root)
+        if offloadable and \
            all(i.is_Affine for i in [root] + collapsable) and \
            self.par_tile:
             # TODO: still unable to exploit multiple par-tiles (one per nest)
@@ -212,12 +251,37 @@ class DeviceAccizer(PragmaDeviceAwareTransformer):
             else:
                 tile = tile[:ncollapsable + 1]
 
-            body = self.DeviceIteration(gpu_fit=self.gpu_fit, tile=tile, **root.args)
+            body = self.DeviceIteration(gpu_fit=self.gpu_fit, tile=tile, qid=self.default_qid, **root.args)
             partree = ParallelTree([], body, nthreads=nthreads)
-
+                
             return root, partree
         else:
-            return super()._make_partree(candidates, nthreads)
+            if offloadable:
+                root, partree = super()._make_partree(candidates, nthreads, qid=self.default_qid)
+                return root, partree
+            else:
+                root, partree = super()._make_partree(candidates, nthreads)
+                # TODO: see if we need to synchronise here?
+#                partree.prefix = flatten([partree.prefix, self.lang._map_wait(self.default.qid)])
+                return root, partree
+
+    def _make_parallel(self, iet):
+        iet, attrs = super()._make_parallel(iet)
+
+        # do an additional pass to insert OpenACC waits at SyncSpots
+        sync_spots = FindNodes(SyncSpot).visit(iet)
+        if not sync_spots:
+            return iet, attrs
+
+        efuncs = []
+        subs = {}
+        for n in sync_spots:                        
+            if [x for x in n.sync_ops if isinstance(x, WaitLock)]:
+                subs[n] = (n, self.lang._map_wait(self.default_qid))
+
+        iet = Transformer(subs).visit(iet)
+
+        return iet, attrs
 
 
 class DevicePointerFetch(List):
@@ -245,6 +309,7 @@ class DeviceAccDataManager(PragmaDeviceAwareDataManager):
 
     @iet_pass
     def place_devptr(self, iet, **kwargs):
+    
         """
         Transform `iet` such that device pointers are used in DeviceCalls.
 

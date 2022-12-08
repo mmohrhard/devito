@@ -20,13 +20,13 @@ from devito.types.basic import AbstractFunction, AbstractSymbol
 from devito.types.object import AbstractObject
 from devito.types import Indexed, Symbol
 
-__all__ = ['Node', 'Block', 'Expression', 'Callable', 'Call', 'CudaCall', 'CudaCallable',
+__all__ = ['Node', 'Block', 'Expression', 'Callable', 'Call',
            'Conditional', 'Iteration', 'List', 'Section', 'TimedList', 'Prodder',
            'MetaCall', 'PointerCast', 'HaloSpot', 'Definition', 'ExpressionBundle',
            'AugmentedExpression', 'Increment', 'Return', 'While',
            'ParallelIteration', 'ParallelBlock', 'Dereference', 'Lambda',
            'SyncSpot', 'Pragma', 'DummyExpr', 'BlankLine', 'ParallelTree',
-           'BusyWait', 'CallableBody', 'Transfer', 'HPtr', 'DPtr', 'AddressOf']
+           'BusyWait', 'CallableBody', 'Transfer', 'HPtr', 'DPtr', 'AddressOf', 'CLiteral']
 
 # First-class IET nodes
 
@@ -248,7 +248,7 @@ class Call(ExprStmt, Node):
     is_Call = True
 
     def __init__(self, name, arguments=None, retobj=None, is_indirect=False,
-                 cast=False, writes=None, types=None):
+                 cast=False, writes=None, types=None, declares=True):
         if isinstance(name, CallFromPointer):
             self.base = name.base
         else:
@@ -260,6 +260,7 @@ class Call(ExprStmt, Node):
         self.cast = cast
         self._writes = as_tuple(writes)
         self.types = as_tuple(types)
+        self.declares=declares
 
         # Sanity check
         assert not self.types or len(self.types) == len(self.arguments)
@@ -295,6 +296,8 @@ class Call(ExprStmt, Node):
         if self.base is not None:
             retval.append(self.base.function)
         if self.retobj is not None:
+            if not  hasattr(self.retobj, "function"):
+                print("huh")
             retval.append(self.retobj.function)
         return tuple(filter_ordered(retval))
 
@@ -332,21 +335,6 @@ class Call(ExprStmt, Node):
     def writes(self):
         return self._writes
 
-class CudaCall(Call):
-    is_Call = True
-
-    def __init__(self, name, grid, threads, arguments=None, writes=None, types=None):
-        super().__init__(name, arguments, None, writes=writes, types=types)
-        self._grid = grid
-        self._threads = threads
-
-    @property
-    def grid(self):
-        return self._grid
-
-    @property
-    def threads(self):
-        return self._threads
 
 class Expression(ExprStmt, Node):
 
@@ -708,13 +696,6 @@ class Callable(Node):
     def defines(self):
         return self.parameters
 
-class CudaCallable(Callable):
-    is_Callable = True
-
-    _traversable = ['body']
-
-    def __init__(self, name, body, parameters=None):
-        super().__init__(name, body, 'void', parameters=parameters, prefix='__global__')
 
 class CallableBody(Node):
 
@@ -730,6 +711,9 @@ class CallableBody(Node):
     init : Node, optional
         A piece of IET to perform some initialization relevant for `body`
         (e.g., to initialize the target language runtime).
+    fini : Node, optional
+        A piece of IET to perform some finalization relevant for `body`
+        (e.g., to finalize the target language runtime).
     allocs : list of Nodes, optional
         Data definitions and allocations for `body`.
     casts : list of PointerCasts, optional
@@ -748,10 +732,10 @@ class CallableBody(Node):
     is_CallableBody = True
 
     _traversable = ['unpacks', 'init', 'allocs', 'casts', 'maps', 'objs',
-                    'body', 'unmaps', 'frees']
+                    'body', 'unmaps', 'frees', 'fini']
 
     def __init__(self, body, init=None, unpacks=None, allocs=None, casts=None,
-                 objs=None, maps=None, unmaps=None, frees=None):
+                 objs=None, maps=None, unmaps=None, frees=None, fini=None):
         # Sanity check
         assert not isinstance(body, CallableBody), "CallableBody's cannot be nested"
 
@@ -764,6 +748,7 @@ class CallableBody(Node):
         self.objs = as_tuple(objs)
         self.unmaps = as_tuple(unmaps)
         self.frees = as_tuple(frees)
+        self.fini = as_tuple(fini)
 
     def __repr__(self):
         return ("<CallableBody <unpacks=%d, allocs=%d, casts=%d, maps=%d, "
@@ -771,7 +756,6 @@ class CallableBody(Node):
                 (len(self.unpacks), len(self.allocs), len(self.casts),
                  len(self.maps), len(self.objs), len(self.unmaps),
                  len(self.frees)))
-
 
 class Conditional(Node):
 
@@ -880,11 +864,12 @@ class Definition(ExprStmt, Node):
     is_Definition = True
 
     def __init__(self, function, shape=None, qualifier=None, initvalue=None,
-                 cargs=None):
+                 cargs=None, prefix=None):
         self.function = function
         self.shape = shape
         self.qualifier = qualifier
         self.initvalue = initvalue
+        self.prefix = prefix
         self.cargs = as_tuple(cargs)
 
     def __repr__(self):
@@ -1155,6 +1140,7 @@ class ParallelIteration(Iteration):
 
     def __init__(self, *args, **kwargs):
         pragmas, kwargs, properties = self._make_header(**kwargs)
+        kwargs.pop("qid", None)
         super().__init__(*args, pragmas=pragmas, properties=properties, **kwargs)
 
     @classmethod
@@ -1345,6 +1331,12 @@ def DummyExpr(*args, init=False):
 
 BlankLine = CBlankLine()
 
+class CLiteral(Node):
+    """
+    A literal block of C code, for things that don't really fit anywhere else
+    """
+    def __init__(self, value=None):
+        self.value = value
 
 class AddressOf(Node):
 
