@@ -481,15 +481,11 @@ def default_allocator(name=None):
             return custom_allocators[name]
         except KeyError:
             pass
-    
-    print ("allocating for platform " + configuration['platform'].name + " with language " + configuration['language'] + "\n")
-    if configuration['language'] == 'cuda':
-        print("using CUDA allocator by default\n")
-        return ALLOC_CUDA_SHARED
+
     if configuration['develop-mode']:
         return ALLOC_GUARD
     
-    if configuration['platform'].name != 'knl':
+    if configuration['platform'].name != 'knl' and ALLOC_CUDA_HOST.available():
         return ALLOC_CUDA_HOST
     
     if NumaAllocator.available():
