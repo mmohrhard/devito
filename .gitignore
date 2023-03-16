@@ -11,4 +11,3 @@ docs/_build
 .ipynb_checkpoints
 
 devito.egg-info/*
-build/

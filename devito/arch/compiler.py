@@ -314,7 +314,6 @@ class Compiler(GCCToolchain):
             from subprocess import run, PIPE
             p = run(["clang-format"], stdout=PIPE, input=code, encoding='ascii')            
             if p.returncode == 0:
-                debug("formatted generated code with clang-format")
                 code = p.stdout
         except OSError:
             pass
@@ -325,14 +324,12 @@ class Compiler(GCCToolchain):
         # in a multiprocess session, typically (but not necessarily) when
         # many processes are frequently attempting jit-compilation (e.g.,
         # when running the test suite in parallel)
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                _, _, _, recompiled = compile_from_string(self, target, code, src_file,
-                                                        cache_dir=cache_dir, debug=debug_build,
-                                                        sleep_delay=sleep_delay)
-        except:
-            pass
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            _, _, _, recompiled = compile_from_string(self, target, code, src_file,
+                                                    cache_dir=cache_dir, debug=debug_build,
+                                                    sleep_delay=sleep_delay)
+
         return recompiled, src_file
 
     def __lookup_cmds__(self):
@@ -530,20 +527,6 @@ class PGICompiler(Compiler):
         # NOTE: using `pgc++` instead of `pgcc` because of issue #1219
         self.CC = 'pgc++'
         self.CXX = 'pgc++'
-        self.MPICC = 'mpic++'
-        self.MPICXX = 'mpicxx'
-
-
-class NvidiaCompiler(PGICompiler):
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, cpp=True, **kwargs)
-        self.cflags.append('-cuda')
-        self.cflags.extend(['-mp', '-acc:gpu'])
-
-    def __lookup_cmds__(self):
-        self.CC = 'nvc++'
-        self.CXX = 'nvc++'
         self.MPICC = 'mpic++'
         self.MPICXX = 'mpicxx'
 

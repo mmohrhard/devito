@@ -4,6 +4,7 @@ from itertools import product
 import sympy
 import numpy as np
 from cached_property import cached_property
+
 from devito.data.allocators import default_allocator
 from devito.logger import info
 from devito.finite_differences import generate_fd_shortcuts
@@ -1825,7 +1826,7 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
 
         # gross, but we need par_dim_to_nnz_{map, m, M} to be resized
         # using our expected allocator
-        info(f"resizing par_dim_to_nnz_map/m/M to {reordering.astype(np.int32).shape}, {reordered_m.astype(np.int32).shape}, {reordered_M.astype(np.int32).shape}")
+        debug(f"resizing par_dim_to_nnz_map/m/M to {reordering.astype(np.int32).shape}, {reordered_m.astype(np.int32).shape}, {reordered_M.astype(np.int32).shape}")
         self._resize_subfunction(self._par_dim_to_nnz_map, reordering.shape)
         self._par_dim_to_nnz_map._data = None
         self._par_dim_to_nnz_map._device_data = None
