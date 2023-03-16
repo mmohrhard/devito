@@ -355,11 +355,12 @@ class Expression(ExprStmt, Node):
 
     is_Expression = True
 
-    def __init__(self, expr, pragmas=None, init=False, operation=None):
+    def __init__(self, expr, pragmas=None, init=False, operation=None, atomic=False):
         self.expr = expr
         self.pragmas = as_tuple(pragmas)
         self.init = init
         self.operation = operation
+        self.atomic = atomic
 
     def __repr__(self):
         return "<%s::%s>" % (self.__class__.__name__,
@@ -413,6 +414,13 @@ class Expression(ExprStmt, Node):
                 (self.is_tensor and isinstance(self.expr.rhs, ListInitializer)))
 
     @property
+    def is_atomic(self):
+        """
+        True if this Expression should write its output atomically
+        """
+        return self.atomic
+    
+    @property
     def defines(self):
         return (self.output.base,) if self.is_initializable else ()
 
@@ -436,8 +444,8 @@ class AugmentedExpression(Expression):
 
     """A node representing an augmented assignment, such as +=, -=, &=, ...."""
 
-    def __init__(self, expr, pragmas=None, operation=None):
-        super().__init__(expr, pragmas=pragmas, operation=operation)
+    def __init__(self, expr, pragmas=None, operation=None, atomic=False):
+        super().__init__(expr, pragmas=pragmas, operation=operation, atomic=atomic)
 
     @property
     def is_initializable(self):
@@ -457,8 +465,8 @@ class Increment(AugmentedExpression):
 
     """Shortcut for ``AugmentedExpression(expr, '+'), since it's so widely used."""
 
-    def __init__(self, expr, pragmas=None):
-        super().__init__(expr, pragmas=pragmas, operation=OpInc)
+    def __init__(self, expr, pragmas=None, atomic=False):
+        super().__init__(expr, pragmas=pragmas, operation=OpInc, atomic=atomic)
 
 
 class Iteration(Node):

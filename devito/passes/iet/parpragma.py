@@ -264,7 +264,7 @@ class PragmaShmTransformer(PragmaSimdTransformer):
             mapper = {partree.root: partree.root._rebuild(reduction=reductions)}
         elif all(i is OpInc for _, i in reductions):
             # Use atomic increments
-            mapper = {i: i._rebuild(pragmas=self.lang['atomic']) for i in exprs}
+            mapper = {i: i._rebuild(pragmas=self.lang['atomic'], atomic=True) for i in exprs}
         else:
             raise NotImplementedError
 

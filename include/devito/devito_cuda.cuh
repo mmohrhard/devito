@@ -61,16 +61,20 @@ uint64_t next_pow2(uint64_t x) {
   return (__builtin_popcount(x) == 1 || x == 1) ? x : 1 << (64 - __builtin_clzl(x - 1));
 }
 
-inline void setupGrid(dim3 &grid, dim3 &threadBlock, int x_size, int y_size,
+#define setupGrid(GRID, THREAD, X, Y, Z) _setupGrid(#GRID, GRID, THREAD, X, Y, Z)
+
+// Heuristic thread block sizing based on the grid
+// Not perfect, but it'll do for now
+inline void _setupGrid(const char *gridName, dim3 &grid, dim3 &threadBlock, int x_size, int y_size,
                       int z_size) {
-  long gp = x_size * y_size * z_size;
+//  long gp = x_size * y_size * z_size;
   if (z_size > 128) {
     threadBlock = dim3(1, 1, 64);
   } else if (z_size > 64) {
     threadBlock = dim3(1, 1, 32);
   } else if (y_size >= 8) {
-    int y = max((int)next_pow2(128 / y_size), 1);
-    int z = max(min(64, (int)next_pow2(128 / y)), 1);
+    int y = max((int)next_pow2(min(128 / y_size, y_size)), 1);
+    int z = max(min(64, (int)next_pow2(min(128 / y, z_size))), 1);
     threadBlock = dim3(1, y, z);
   } else if (x_size > 128) {
     threadBlock = dim3(128, 1, 1);

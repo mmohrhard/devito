@@ -9,7 +9,7 @@ from devito.passes.clusters import (Lift, CudaTasker, CudaStreaming, Streaming, 
                                     cire, cse, factorize, fission, fuse,
                                     optimize_pows)
 from devito.passes.iet import (DeviceOmpTarget, DeviceAccTarget, DeviceCudaTarget, mpiize, hoist_prodders,
-                               is_on_device, linearize, pthreadify, relax_incr_dimensions, cuda_eventify)
+                               is_on_device, linearize, cuda_linearize, pthreadify, relax_incr_dimensions, cuda_eventify)
 
 from devito.tools import as_tuple, timed_pass
 
@@ -230,7 +230,8 @@ class DeviceAdvOperator(DeviceOperatorMixin, CoreOperator):
         cls._Target.DataManager(sregistry, options).process(graph)
 
         # Linearize n-dimensional Indexeds
-        linearize(graph, mode=options['linearize'], sregistry=sregistry)
+        linearizer = cls._Target.Linearizer
+        linearizer(graph, mode=options['linearize'], sregistry=sregistry)
 
         return graph
 
@@ -305,6 +306,8 @@ class DeviceCustomOperator(DeviceOperatorMixin, CustomOperator):
             'cuda-events': partial(cuda_eventify, sregistry=sregistry),
             'mpi': partial(mpiize, **kwargs),
             'linearize': partial(linearize, mode=options['linearize'],
+                                 sregistry=sregistry),
+            'cuda-linearize': partial(cuda_linearize, mode=options['linearize'],
                                  sregistry=sregistry),
             'prodders': partial(hoist_prodders),
             'init': partial(parizer.initialize, options=options)
@@ -450,6 +453,7 @@ class DeviceCustomCudaOperator(DeviceCudaOperatorMixin, DeviceCustomOperator):
         mapper = super()._make_iet_passes_mapper(**kwargs)
         mapper['cuda'] = mapper['parallel']        
         mapper['pthreadify'] = mapper['cuda-events']
+        mapper['linearize'] = mapper['cuda-linearize']
         return mapper
 
     @classmethod

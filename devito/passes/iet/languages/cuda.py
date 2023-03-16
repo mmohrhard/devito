@@ -252,7 +252,6 @@ class CudaBB(PragmaLangBB):
                        Conditional(CondEq(KernelStream(), NullPointer()), Call("cudaStreamCreateWithFlags", (Byref(KernelStream()), "cudaStreamNonBlocking"))),
 
                        Call("nvtxRangePush", ("__FUNCTION__", )),
-                       c.Statement(f'printf("devicerm=%d, updatehost=%d, updatedevice=%d, devicecreate=%d\\n", devicerm, updatehost, updatedevice, devicecreate)')
             ]),
         'fini': lambda args:
             List(body=[Call("nvtxRangePop")]),
@@ -308,7 +307,7 @@ class CudaBB(PragmaLangBB):
             #Call('acc_get_device_num'),
             Call('max', (0, 0,)),
         'device-alloc': lambda i, *a, retobj=None:
-            Conditional(CondEq(VOID(retobj, '*'), 0), List(body=[c.Statement(f'printf("allocating %d bytes for {retobj}\\n", {ccode(i)})'), CudaChecked(Call('cudaMalloc', (VOID(Byref(retobj), '**'), i,)))])),
+            CudaChecked(Call('cudaMalloc', (VOID(Byref(retobj), '**'), i,))),
         'device-free': lambda i, *a:
             #Call('acc_free', (i,))
             CudaChecked(Call('cudaFree', (i,))),
@@ -320,7 +319,7 @@ class CudaBB(PragmaLangBB):
             CudaChecked(Call("cudaStreamWaitEvent", (i, j,))),
         'create-event': lambda i:
             CudaChecked(Call("cudaEventCreateWithFlags", (Byref(i), "cudaEventDisableTiming"))),
-        'destroy-event': lambda i:
+        'destroy-event': lambda i:            
             CudaChecked(Call("cudaEventDestroy", (i,))),
         'record-event': lambda i, j:
             CudaChecked(Call("cudaEventRecord", (i, j)))
@@ -399,6 +398,9 @@ class CudaBB(PragmaLangBB):
             stream = e.stream if e.stream is not None else 0
         return cls.mapper['record-event'](e.event, stream)
 
+class CudaAtomicExpression(Expression):
+    def __init__(self, expr, pragmas=None, init=None, operation=None):
+        super().__init__(expr, pragmas, init, operation, True)
 
 class DeviceCudaizer(PragmaDeviceAwareTransformer):
 
@@ -409,16 +411,12 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
     def _extract_kernels(self, candidates, nthreads=None):
         assert candidates
 
-        #root, collapsable = self._select_candidates(candidates)
-        #ncollapsable = len(collapsable)
-
         root = candidates[0]
         if self._is_offloadable(root):
             kernel_name = "kernel%s" % (self.count)
-            #body = self.DeviceIteration(gpu_fit=self.gpu_fit,
-            #                            ncollapse=0,
-            #                            **root.args)
+
             kernel, extracted_iterators = self._make_cuda_kernel(kernel_name, root)
+
             # find the non-derived dimensions we're iterating over, since the dimension
             # list for an Iteration includes the original dimension and the derived version
             kdims = [next(filter(lambda x: x.is_Derived == False, c.dimensions)).symbolic_size for c in extracted_iterators][:3]
@@ -434,33 +432,16 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             # filtering out unwanted points in the space on the GPU is very approximately zero-cost
             kgrid = kdims.copy()
 
+            # the grid/threads are (for now) set up in some C++ code from a header
             kthread = [1] * len(kdims)
-            # CUDA has hard limits on the maximum size of a thread block and of grid dimensions
-            # so adjust accordingly
-            #if kgrid[1] > 1024:
-            #    kthread[1] = 1024
-            #    kgrid[1] = kgrid[1] / 1024
-
-            #if len(kthread) > 2:
-            #    kthread[0] = 1
-            #    kthread[1] = 1
-            #    kthread[2] = 64
-            #    kgrid[0] = kgrid[0] / 1
-            #    kgrid[1] = kgrid[1]# / 2# / 8
-            #    kgrid[2] = kgrid[2] / 64
-
 
             partree = CudaCall(kernel_name, kgrid, kthread, kernel.parameters, stream=KernelStream())
             # Make sure that the enclosing function knows we need the full size of the Functions
             partree.expr_symbols = as_tuple(flatten((partree.expr_symbols, kdims)))
-            partree = List(body=[
-                #Call("setupGrid", (kthread, kgrid, kgrid[0], kgrid[1] if len(kgrid) > 1 else 1, kgrid[2] if len(kgrid) > 2 else 1)),
-                partree,
-            ])
 
             self.count = self.count + 1
 
-            return root, partree, kernel
+            return root, partree, [kernel]
 
         elif not self.par_disabled:
             # Resort to host parallelism
@@ -483,31 +464,18 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
                 continue
 
             # Outer parallelism
-            root, partree, kernel = self._extract_kernels(candidates)
+            root, partree, kernels_gen = self._extract_kernels(candidates)
             if partree is None or root in mapper:
                 continue
 
             mapper[root] = partree
-            kernels.append(kernel)
+            if kernels_gen:
+                kernels.extend(kernels_gen)
 
 
         iet = Transformer(mapper).visit(iet)
         attrs = {'efuncs': kernels, 'includes': self.lang['headers']}
 
-        # Also, insert CUDA events
-        # sync_spots = FindNodes(SyncSpot).visit(iet)
-        # if not sync_spots:
-        #     return iet, attrs
-
-        # subs = {}
-        # for n in sync_spots:
-        #     cuda_waits = [x for x in n.sync_ops if isinstance(x, CudaWaitEvent)]
-        #     if cuda_waits:
-        #         subs[n] = (n, [self.lang._map_wait_recreate_event(w) for w in cuda_waits])
-
-        # iet = Transformer(subs).visit(iet)
-
-        #iet = iet._rebuild(body=iet.body._rebuild(objs=iet.body.objs + (HostStream(), MemCopyStream(),)))
         return iet, attrs
 
     def _make_nested_partree(self, partree):
@@ -518,21 +486,8 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             return super()._make_nested_partree(partree)
 
     def _make_cuda_kernel(self, name, body):
-        # Need to extract the outermost Iterations, as they'll be handled by the GPU hardware
-        dim_iter = []
-        #node = body#self._make_reductions(body)
-        #while isinstance(node, Iteration) and len(dim_iter) < 3:
-        #    iter = node
-        #    dim_iter.append(iter)
-        #    if len(node.nodes) == 1:
-        #        node = node.nodes[0]
-        #        iter.nodes = []
-        #    else:
-        #        node = node.nodes
-        #        break
-
         # Find the iterators we consider eligible for being the GPU grid dimensions
-        iterations = FindNodes(Iteration).visit(body)
+        iterations = list([i for i in FindNodes(Iteration).visit(body) if i.is_ParallelRelaxed])
         possible_iter_dimensions = list(OrderedDict.fromkeys([x.dim for x in iterations if not x.dim.name.startswith("par_dim")]))
         grouped_iters = [(x, list(OrderedDict.fromkeys([i for i in iterations if i.dim == x]))) for x in possible_iter_dimensions]
         valid_dims = list(filter(lambda i: len(set([z.limits for z in i[1]])) == 1, grouped_iters))
@@ -540,6 +495,15 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             valid_dims = valid_dims[0:3]
 
         iet = IterationExtractor([d[0] for d in valid_dims]).visit(body)
+        
+        # if any of the iterations we're extracting have the atomic flag set, we need to force all reductions
+        # in the kernel to be atomic regardless of any inner iterations
+        force_atomic = any(i.is_ParallelAtomic for i in flatten([d[1] for d in valid_dims]))
+        iet = self._make_reductions(iet, force_atomic=force_atomic)
+        # replace any atomic ops
+        exprs = [e for e in FindNodes(Expression).visit(iet) if e.is_atomic]
+        mapper = dict([(i, CudaAtomicExpression(i.expr, i.pragmas, i.init, i.operation),) for i in exprs])
+        iet = Transformer(mapper).visit(iet)
         
         # Now, generate the iteration dimension variables from the blockIdx/threadIdx
         dim_vars = ["x", "y", "z"]
@@ -549,12 +513,12 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             dim, iters = valid_dims[v]
             limits = iters[0].limits
             symbols = flatten([i.expr_symbols for i in iters])
-            # FIXME: this should be a declaration, not an assignment - figure out how to get the iteration variables
-            # out of the signature?
-            kernel.append(c.Initializer(c.Value('int', dim.name), "blockDim.%s * blockIdx.%s + threadIdx.%s" % (dim_vars[v], dim_vars[v], dim_vars[v])))
+
+            kernel.append(c.Initializer(c.Value('int', dim.name), "%s + blockDim.%s * blockIdx.%s + threadIdx.%s" % (limits[0], dim_vars[v], dim_vars[v], dim_vars[v])))
             args = args.union(symbols)
+
             # Add the iteration conditions
-            kernel.append(c.If("%s < %s || %s >= %s" % (dim.name, str(limits[0]), dim.name, str(limits[1])), c.Statement("return")))
+            kernel.append(c.If("%s > %s" % (dim.name, str(limits[1])), c.Statement("return")))
 
         # Add the iteration body
         kernel.extend(as_tuple(iet))
@@ -565,8 +529,8 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
 
         return (cuda_callable, list([x[1][0] for x in valid_dims]))
 
-    def _make_reductions(self, partree):
-        if not any(i.is_ParallelAtomic for i in partree.collapsed):
+    def _make_reductions(self, partree, force_atomic=False):
+        if not force_atomic and not any(i.is_ParallelAtomic for i in FindNodes(Iteration).visit(partree)):
             return partree
 
         exprs = [i for i in FindNodes(Expression).visit(partree) if i.is_reduction]
@@ -579,7 +543,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             mapper = {partree.root: partree.root._rebuild(reduction=reductions)}
         elif all(i is OpInc for _, i in reductions):
             # Use atomic increments
-            mapper = {i: i._rebuild(pragmas=self.lang['atomic']) for i in exprs}
+            mapper = {i: i._rebuild(atomic=True) for i in exprs}
         else:
             raise NotImplementedError
 
@@ -646,7 +610,7 @@ class DeviceCudaDataManager(DataManager):
 
         nbytes = SizeOf(obj._C_typedata)*obj.size
         init = doalloc(nbytes, None, retobj=obj._C_symbol)
-        allocs = (init, ) if isinstance(init, Call) and init.retobj == obj else (decl, init)
+        allocs = (decl, Conditional(CondEq(obj._C_symbol, NullPointer()), init))
 
         free = dofree(obj._C_name, None)
 
@@ -727,8 +691,7 @@ class DeviceCudaDataManager(DataManager):
         memptr = VOID(Byref(ffp1), '**')
         alloc1 = self.lang['host-alloc'](memptr, alignment, nbytes_param)
 
-        ffp2 = FieldFromPointer(obj._C_field_device_data, obj._C_symbol)
-        memptr2 = VOID(Byref(ffp2), '*')
+        ffp2 = FieldFromPointer(obj._C_field_device_data, obj._C_symbol)        
         alloc2 = self.lang['device-alloc'](nbytes_param, retobj=ffp2)
 
         ffp0 = FieldFromPointer(obj._C_field_nbytes, obj._C_symbol)
@@ -746,21 +709,20 @@ class DeviceCudaDataManager(DataManager):
 
         alloc_name = self.sregistry.make_name(prefix='alloc')
         body = (decl, alloc0, init0, init1, init2, alloc1, alloc2, ret)
-        #body = (decl, alloc0, alloc1, init, ret)
+        
         efunc0 = make_callable(alloc_name, body, retval=obj._C_typename)
         assert len(efunc0.parameters) == 1  # `nbytes_param`
 
         free_name = self.sregistry.make_name(prefix='free')
         efunc1 = make_callable(free_name, (free0, free1, free2))
-        #efunc1 = make_callable(name, (free0, free2))
+        
         assert len(efunc1.parameters) == 1  # `obj`
         alloc = List(body=[static_decl, Conditional(CondOr(CondEq(VOID(obj._C_symbol, '*'), 0), CondNe(nbytes_arg, ffp0)),
                             List(body=[
-                                    Conditional(CondNe(VOID(obj._C_symbol, '*'), 0), Block(body=[c.Statement(f'printf("resizing {obj._C_symbol} from %d to %d bytes\\n", {ccode(ffp0)}, {ccode(nbytes_arg)})'),
-                                                                                                 Call(free_name, obj),
+                                    Conditional(CondNe(VOID(obj._C_symbol, '*'), 0), Block(body=[Call(free_name, obj),
                                                                                                  c.Assign(obj._C_symbol, 0)])),
                                     Call(alloc_name, nbytes_arg, retobj=obj, declares=False)]))])
-        free = List(body=[Conditional(DeviceRM(), List(body=[c.Statement(f'printf("deleting local storage for {obj._C_symbol}\\n")'), Call(free_name, obj)]))])
+        free = Conditional(DeviceRM(), Call(free_name, obj))
 
         storage.update(obj, site, allocs=alloc, frees=free, efuncs=(efunc0, efunc1))
 
@@ -997,6 +959,7 @@ class KernelStream(CudaStream):
 
     def __new__(cls):
         return super().__new__(cls, name="kernel_stream")
+    
 class MemCopyStream(CudaStream):
     def __init__(cls):
         super().__init__("memcpy_stream")
@@ -1064,10 +1027,11 @@ class CudaOrchestrator(Orchestrator):
         preactions = [c.Comment("Block the copy until it's safe"),
                       BlankLine]
 
+        # the main kernel stream should mark this as the appropriate place for it to start
+        preactions.extend([self.lang._map_fire_event(s, stream=self._kernel_stream) for s in sync_ops])
         # these should run on the memcpy stream, so it needs to wait
         preactions.extend([self.lang._map_wait_event(s, stream=self._memcpy_stream) for s in sync_ops])
-        # and the main kernel stream should mark this as the appropriate place for it to start
-        preactions.extend([self.lang._map_fire_event(s, stream=self._kernel_stream) for s in sync_ops])
+
         # then recreate the event
         preactions.extend([self.lang._map_recreate_event(s) for s in sync_ops])
         preactions.extend([self.lang._map_update_host_async(s.function, qid=self._memcpy_stream) for s in sync_ops])
@@ -1335,7 +1299,6 @@ def lower_async_calls(iet, track=None, sregistry=None):
         name = sregistry.make_name(prefix='sdata')
         sdata = b.sdata._rebuild(name=name)
         name = sregistry.make_name(prefix='threads')
-        #threads = b.threads._rebuild(name=name)
 
         # Call to `sdata` initialization Callable
         sbase = sdata.symbolic_base
@@ -1354,9 +1317,7 @@ def lower_async_calls(iet, track=None, sregistry=None):
         #assert len(efuncs[n.name].parameters) == len(arguments)
         call0 = Call(efuncs[n.name].name, arguments)
 
-        initialization.append(List(
-            body=[Definition(sdata, None, None, NullPointer())],#c.Initializer(c.Value("%s*" % sdata._C_typedata, sdata._C_symbol), NullPointer())],
-        ))
+        initialization.append(Definition(sdata, None, None, NullPointer()))
 
         # Activation
         #if threads.size == 1:

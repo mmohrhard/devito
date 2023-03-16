@@ -15,6 +15,7 @@ from devito.exceptions import VisitorException
 from devito.ir.iet.nodes import (Node, Iteration, Expression, ExpressionBundle,
                                  Call, Lambda, BlankLine, Section, AddressOf,
                                  CLiteral)
+from devito.ir.equations import OpInc
 from devito.ir.support.space import Backward
 from devito.symbolics import ccode, uxreplace, CondAnd
 from devito.tools import GenericVisitor, as_tuple, filter_ordered, filter_sorted, flatten
@@ -187,7 +188,7 @@ class CGen(Visitor):
             else:
                 ret.append(c.Value('void', '*_%s' % i._C_name))
         return ret
-    
+
     def _args_cuda_decl(self, callable, args):
         """Generate cgen CUDA declarations from an iterable of symbols and expressions."""
         ret = []
@@ -225,7 +226,7 @@ class CGen(Visitor):
             except AttributeError:
                 ret.append(ccode(i))
         return ret
-    
+
     def _args_call(self, args):
         """
         Generate cgen function call arguments from an iterable of symbols and expressions.
@@ -440,6 +441,11 @@ class CGen(Visitor):
 
         return code
 
+    def visit_CudaAtomicExpression(self, o):
+        assert(o.operation == OpInc)
+        code = c.Statement("atomicAdd(&%s, %s)" % (ccode(o.expr.lhs, dtype=o.dtype), ccode(o.expr.rhs, dtype=o.dtype)))
+        return code
+
     def visit_AugmentedExpression(self, o):
         code = c.Statement("%s %s= %s" % (ccode(o.expr.lhs, dtype=o.dtype), o.op,
                            ccode(o.expr.rhs, dtype=o.dtype)))
@@ -450,7 +456,7 @@ class CGen(Visitor):
     def visit_CudaCall(self, o, nested_call=False):
         retobj = o.retobj
         arguments = self._args_cuda_call(o, o.arguments)
-        
+
         return MultilineCudaCall(o.name, o.grid, o.threads, arguments, o.stream)
 
     def visit_Call(self, o, nested_call=False):
@@ -527,20 +533,16 @@ class CGen(Visitor):
         src = o.host_storage if o.direction == CudaTransferDirection.H2D else o.device_storage
         dst = o.device_storage if o.direction == CudaTransferDirection.H2D else o.host_storage
         xfer_name = "cudaMemcpyHostToDevice" if o.direction == CudaTransferDirection.H2D else "cudaMemcpyDeviceToHost"
-        alloc = c.If('%s == nullptr' % o.device_storage, 
+        alloc = c.If('%s == nullptr' % o.device_storage,
                      c.Block([
-                        c.Statement(f'printf("allocating a device buffer for {o.device_storage}, will be freed by this operator\\n")'),
                         c.Statement('CudaChecked(cudaMalloc((void**)&%s, %s))' % (o.device_storage, o.size)),
                         c.Assign(o.operator_allocated, 1)
                     ]))
 
-        debug = c.Statement('printf("copying 0x%lx bytes from ' + src + ' (0x%lx) to ' + dst + ' (0x%lx)\\n", ' + f'{o.size}, {src}, {dst})')
         if o.stream is not None:
-            copy_statement = c.Statement('CudaChecked(cudaMemcpyAsync(%s, %s, %s, %s, %s))' % (dst, src, o.size, xfer_name, o.stream))
-            xfer = c.Block([copy_statement])
+            xfer = c.Statement('CudaChecked(cudaMemcpyAsync(%s, %s, %s, %s, %s))' % (dst, src, o.size, xfer_name, o.stream))
         else:
-            copy_statement = c.Statement('CudaChecked(cudaMemcpy(%s, %s, %s, %s))' % (dst, src, o.size, xfer_name))
-            xfer = c.Block([debug, copy_statement])
+            xfer = c.Statement('CudaChecked(cudaMemcpy(%s, %s, %s, %s))' % (dst, src, o.size, xfer_name))
 
         ops = []
 
@@ -553,14 +555,12 @@ class CGen(Visitor):
             ops.append(xfer)
 
         if o.delete:
-            ops.append(c.Statement(f'printf("devicerm=%d, updatehost=%d, condition=%d, operator_allocated=%d for {o.device_storage}\\n", devicerm, updatehost, (({o.delete}) && {o.operator_allocate}) ? 1 : 0)'))
             ops.append(c.If(CondAnd(o.delete, o.operator_allocated), c.Block([
-                c.Statement(f'printf("freeing CUDA memory at 0x%lx ({o.device_storage})\\n", {o.device_storage})'),
-                c.Statement('CudaChecked(cudaFree(%s))' % (o.device_storage)), 
+                c.Statement('CudaChecked(cudaFree(%s))' % (o.device_storage)),
                 c.Assign(o.device_storage, "nullptr")])))
 
         return c.Collection(ops)
-        
+
     def visit_CudaAlloc(self, o):
         alloc = c.Block([
             c.Statement("CudaChecked(cudaMalloc((void**)&%s, %s))" % (o.device_storage, o.size)),
@@ -573,22 +573,20 @@ class CGen(Visitor):
             condition = '%s == nullptr' % (o.device_storage)
 
         return c.If(condition, alloc)
-        
+
     def visit_CudaDealloc(self, o):
         cond = o.operator_allocated
 
         if o.condition:
             cond = '%s && (%s)' % (o.operator_allocated, o.condition)
 
-        dealloc = [            
-            c.Statement(f'printf("freeing CUDA memory I allocated at 0x%lx ({o.device_storage})\\n", {o.device_storage})'),
+        dealloc = [
             c.Statement('CudaChecked(cudaFree(%s))' % (o.device_storage)),
             c.Assign(o.device_storage, "nullptr")
         ]
 
-        return c.Collection([c.Statement(f'printf("devicerm=%d, updatehost=%d, condition=%d, operator_allocated=%d for {o.device_storage}\\n", devicerm, updatehost, ({cond}) ? 1 : 0, {o.operator_allocated})'),
-                             c.If(cond, c.Block(dealloc))        ])
-        
+        return c.If(cond, c.Block(dealloc))
+
     def visit_While(self, o):
         condition = ccode(o.condition)
         if o.body:
@@ -1227,11 +1225,11 @@ class MultilineCudaCall(c.Generable):
 
         grid_name = "grid_%s" % self.name
         thread_name = "threads_%s" % self.name
-        yield ("dim3 %s(" % grid_name) + ",".join(str(i) for i in grid) + ");"
-        yield ("dim3 %s(" % thread_name) + ",".join(str(i) for i in threads) + ");"
+        yield "dim3 %s;" % grid_name
+        yield "dim3 %s;" % thread_name
         yield ("setupGrid(%s, %s, " % (grid_name, thread_name) + ", ".join(str(i) for i in grid) + ");")
-        tip = "%s<<<grid_%s, threads_%s, 0, %s>>>(" % (self.name, self.name, self.name, self.stream if self.stream is not None else "0")
-        
+        tip = "%s<<<grid_%s, threads_%s, 0, %s>>>(" % (self.name, self.name, self.name, self.stream if self.stream is not None else "cudaStreamDefault")
+
         processed = []
         for i in self.arguments:
             if isinstance(i, (MultilineCall, LambdaCollection)):
@@ -1250,13 +1248,5 @@ class MultilineCudaCall(c.Generable):
         tip = tip + ",".join(processed)
         tip += ")"
         tip += ";"
-        
+
         yield tip
-        #yield "cudaStreamSynchronize(0);"
-        #yield "{ cudaError_t err = cudaGetLastError();"
-#
-        #yield "if (err != cudaSuccess) {"
-        #yield f"printf(\"\\n!E {self.name} launched with grid shape (%d,%d,%d) and thread block size (%d, %d, %d)\\n\",grid_{self.name}.x,grid_{self.name}.y,grid_{self.name}.z,threads_{self.name}.x,threads_{self.name}.y,threads_{self.name}.z);\n";
-        #yield "printf(\"\\n!E %s: %s\\n\",cudaGetErrorName(err), cudaGetErrorString(err));"
-        #yield "exit(1);"
-        #yield "}}"
