@@ -32,7 +32,7 @@ def cuda_linearize(graph, **kwargs):
     track = DefaultOrderedDict(lambda: Bunch(stmts0=[], stmts1=[], held=set(), cbk=None))
 
     cuda_linearization(graph, track=track, **kwargs)
-    info("CUDA linearisation")
+
     # Sanity check
     assert all(not v.held or len(v.held) == 0 for v in track.values())
 
@@ -59,7 +59,6 @@ def cuda_linearization(iet, **kwargs):
 
     iet, headers = linearize_accesses(iet, key, track, sregistry)
     iet = linearize_pointers(iet, key)
-    #iet = linearize_transfers(iet, sregistry)
 
     return iet, {'headers': headers}
 
@@ -88,7 +87,7 @@ def linearize_accesses(iet, key, track, sregistry):
             # it when in debug mode at `prepare_arguments` time, ie right
             # before jumping to C?
             # Let's uniquify the dimensions a little more to make it more likely that padding
-            # won't be an issue.. include 'total number of dimensions' and 'dimension of index relative to 
+            # won't be an issue.. include 'total number of dimensions' and 'dimension of index relative to
             # most rapidly-changing dimension'
             mapper[(d, f._size_halo[d], f._size_padding[d], len(f.dimensions), f.dimensions.index(d) - len(f.dimensions) - 1, getattr(f, 'grid', None))].append(f)
 
@@ -105,7 +104,7 @@ def linearize_accesses(iet, key, track, sregistry):
                 # throw an assertion into the output so that the operator will crash
                 # if it was otherwise going to produce invalid results
                 if f != v[0] and isinstance(v[0], DiscreteFunction):
-                    track[f].stmts0.append(c.Statement("assert(%s == %s)" % (f._C_get_field(FULL, d).size if isinstance(f, DiscreteFunction) else f.symbolic_shape[d], 
+                    track[f].stmts0.append(c.Statement("assert(%s == %s)" % (f._C_get_field(FULL, d).size if isinstance(f, DiscreteFunction) else f.symbolic_shape[d],
                                                     v[0]._C_get_field(FULL, d).size if isinstance(v[0], DiscreteFunction) else v[0].symbolic_shape[d])))
 
     # For all unseen Functions, build the stride exprs. For example:
@@ -227,62 +226,6 @@ def linearize_pointers(iet, key):
     mapper.update({n: n._rebuild(flat=True)
                    for n in FindNodes(Dereference).visit(iet)
                    if n.pointer.is_PointerArray and n.pointee in candidates})
-
-    iet = Transformer(mapper).visit(iet)
-
-    return iet
-
-
-def linearize_transfers(iet, sregistry):
-    casts = FindNodes(PointerCast).visit(iet)
-    candidates = {i.function for i in casts if i.flat is not None}
-
-    mapper = {}
-    for n in FindNodes(Transfer).visit(iet):
-        if n.function not in candidates:
-            continue
-
-        imask0 = n.imask or []
-
-        try:
-            index = imask0.index(FULL)
-        except ValueError:
-            index = len(imask0)
-
-        # Drop entries being flatten
-        imask = imask0[:index]
-
-        # The NVC 21.2 compiler (as well as all previous and potentially some
-        # future versions as well) suffers from a bug in the parsing of pragmas
-        # using subarrays in data clauses. For example, the following pragma
-        # excerpt `... copyin(a[0]:b[0])` leads to a compiler error, despite
-        # being perfectly legal OpenACC code. The workaround consists of
-        # generating `const int ofs = a[0]; ... copyin(n:b[0])`
-        exprs = []
-        if len(imask) < len(imask0) and len(imask) > 0:
-            assert len(imask) == 1
-            try:
-                start, size = imask[0]
-            except TypeError:
-                start, size = imask[0], 1
-
-            if start != 0:  # Spare the ugly generated code if unneccesary (occurs often)
-                name = sregistry.make_name(prefix='%s_ofs' % n.function.name)
-                wildcard = Wildcard(name=name, dtype=np.int32, is_const=True)
-
-                symsect = n._rebuild(imask=imask).sections
-                assert len(symsect) == 1
-                start, _ = symsect[0]
-                exprs.append(DummyExpr(wildcard, start, init=True))
-
-                imask = [(wildcard, size)]
-
-        rebuilt = n._rebuild(imask=imask)
-
-        if exprs:
-            mapper[n] = List(body=exprs + [rebuilt])
-        else:
-            mapper[n] = rebuilt
 
     iet = Transformer(mapper).visit(iet)
 

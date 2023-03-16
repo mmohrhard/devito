@@ -32,7 +32,7 @@ from devito.passes.iet.orchestration import Orchestrator
 from devito.passes.iet.parpragma import (PragmaDeviceAwareTransformer, PragmaLangBB,
                                          PragmaTransfer, PragmaDeviceAwareDataManager)
 from devito.symbolics import (Byref, DefFunction, FieldFromPointer, IndexedPointer,
-                              ListInitializer, SizeOf, VOID, Keyword, ccode,
+                              ListInitializer, SizeOf, VOID, INT, Keyword, ccode,
                                CondEq, CondNe, CondOr)
 from devito.passes.iet.languages.C import CBB
 from devito.passes.iet.languages.openmp import OmpRegion, OmpIteration
@@ -117,7 +117,7 @@ class CudaStorage:
     @cached_property
     def operator_allocated(self):
         return "%s->%s" % (self.function._C_name, self.function._C_field_operator_allocated)
-    
+
     @cached_property
     def size(self):
         return ('sizeof(%s) * ' % (self.function.indexed._C_typedata)) + '*'.join("(" + ccode(j) + ")" for i, j in self.sections)
@@ -256,13 +256,12 @@ class CudaBB(PragmaLangBB):
         'fini': lambda args:
             List(body=[Call("nvtxRangePop")]),
         'num-devices': lambda args, retobj:
-#            Call('acc_get_num_devices', args, retobj=retobj),
-            None,
-        'set-device': lambda args:
-            #Call('acc_set_device_num', args),
-            None,
+            Block(body=[c.Initializer(c.Value("int", "_num_devices"), 0),
+                        Call("cudaGetDeviceCount", (INT(Byref(retobj), '*')))]),
+        'set-device': lambda device:
+            CudaChecked(Call("cudaSetDevice", (device,))),
         # Pragmas
-        'atomic': None, # c.Pragma('acc atomic update'),
+        'atomic': None, # CUDA doesn't use a pragma for this
         'map-enter-to': lambda i, j:
             None, #c.Pragma('acc enter data copyin(%s%s)' % (i, j)),
         'map-enter-to-wait': lambda i, j, k:
@@ -304,8 +303,8 @@ class CudaBB(PragmaLangBB):
             Lambda(body=[Call('acc_memcpy_to_device_async', [i, j, k, l]),
                        Call('acc_wait', [l])]),
         'device-get':
-            #Call('acc_get_device_num'),
-            Call('max', (0, 0,)),
+            # calls a helper function since we expect a return value
+            Call('_cudaGetCurrentDevice'),
         'device-alloc': lambda i, *a, retobj=None:
             CudaChecked(Call('cudaMalloc', (VOID(Byref(retobj), '**'), i,))),
         'device-free': lambda i, *a:
@@ -319,7 +318,7 @@ class CudaBB(PragmaLangBB):
             CudaChecked(Call("cudaStreamWaitEvent", (i, j,))),
         'create-event': lambda i:
             CudaChecked(Call("cudaEventCreateWithFlags", (Byref(i), "cudaEventDisableTiming"))),
-        'destroy-event': lambda i:            
+        'destroy-event': lambda i:
             CudaChecked(Call("cudaEventDestroy", (i,))),
         'record-event': lambda i, j:
             CudaChecked(Call("cudaEventRecord", (i, j)))
@@ -495,7 +494,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             valid_dims = valid_dims[0:3]
 
         iet = IterationExtractor([d[0] for d in valid_dims]).visit(body)
-        
+
         # if any of the iterations we're extracting have the atomic flag set, we need to force all reductions
         # in the kernel to be atomic regardless of any inner iterations
         force_atomic = any(i.is_ParallelAtomic for i in flatten([d[1] for d in valid_dims]))
@@ -504,7 +503,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
         exprs = [e for e in FindNodes(Expression).visit(iet) if e.is_atomic]
         mapper = dict([(i, CudaAtomicExpression(i.expr, i.pragmas, i.init, i.operation),) for i in exprs])
         iet = Transformer(mapper).visit(iet)
-        
+
         # Now, generate the iteration dimension variables from the blockIdx/threadIdx
         dim_vars = ["x", "y", "z"]
         kernel = []
@@ -554,7 +553,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
 class IterationExtractor(Visitor):
     def __init__(self, dims):
         super(Visitor, self).__init__()
-        self._dims = dims        
+        self._dims = dims
 
     def visit_object(self, o, **kwargs):
         return o
@@ -568,16 +567,16 @@ class IterationExtractor(Visitor):
     def visit_Iteration(self, o, **kwargs):
         if o.dim in self._dims:
             return List(body=self._visit(o.nodes, **kwargs))
-        
+
         else:
             children = [self._visit(i, **kwargs) for i in o.children]
             return o._rebuild(*children, **o.args_frozen)
-    
+
     def visit_Node(self, o, **kwargs):
         children = [self._visit(i, **kwargs) for i in o.children]
         return o._rebuild(*children, **o.args_frozen)
 
-    
+
 class DeviceCudaDataManager(DataManager):
 
     lang = CudaBB
@@ -691,7 +690,7 @@ class DeviceCudaDataManager(DataManager):
         memptr = VOID(Byref(ffp1), '**')
         alloc1 = self.lang['host-alloc'](memptr, alignment, nbytes_param)
 
-        ffp2 = FieldFromPointer(obj._C_field_device_data, obj._C_symbol)        
+        ffp2 = FieldFromPointer(obj._C_field_device_data, obj._C_symbol)
         alloc2 = self.lang['device-alloc'](nbytes_param, retobj=ffp2)
 
         ffp0 = FieldFromPointer(obj._C_field_nbytes, obj._C_symbol)
@@ -709,13 +708,13 @@ class DeviceCudaDataManager(DataManager):
 
         alloc_name = self.sregistry.make_name(prefix='alloc')
         body = (decl, alloc0, init0, init1, init2, alloc1, alloc2, ret)
-        
+
         efunc0 = make_callable(alloc_name, body, retval=obj._C_typename)
         assert len(efunc0.parameters) == 1  # `nbytes_param`
 
         free_name = self.sregistry.make_name(prefix='free')
         efunc1 = make_callable(free_name, (free0, free1, free2))
-        
+
         assert len(efunc1.parameters) == 1  # `obj`
         alloc = List(body=[static_decl, Conditional(CondOr(CondEq(VOID(obj._C_symbol, '*'), 0), CondNe(nbytes_arg, ffp0)),
                             List(body=[
@@ -959,7 +958,7 @@ class KernelStream(CudaStream):
 
     def __new__(cls):
         return super().__new__(cls, name="kernel_stream")
-    
+
 class MemCopyStream(CudaStream):
     def __init__(cls):
         super().__init__("memcpy_stream")
@@ -988,13 +987,6 @@ class CudaOrchestrator(Orchestrator):
             footer=c.Line()
         )
 
-        #trigger = List(
-        #    header = c.Comment("Let the background stream know we're done with `%s`" %
-        #                        ",".join(s.function.name for s in sync_ops)),
-        #    body=[self.lang._map_fire_event(s, stream=self._kernel_stream) for s in sync_ops],
-        #    footer=c.Line()
-        #)
-        #iet = List(body=flatten([(waitloop,), iet.body, trigger]))
         iet = List(body=flatten([(waitloop,), iet.body]))
         return iet, []
 
@@ -1078,12 +1070,10 @@ class CudaOrchestrator(Orchestrator):
     def _make_prefetchupdate(self, iet, sync_ops):
         qid = QueueID()
         preactions = []
-        preactions.extend([self.lang._map_wait_event(s, stream=self._host_stream) for s in sync_ops])        
+        preactions.extend([self.lang._map_wait_event(s, stream=self._host_stream) for s in sync_ops])
         preactions.extend([self.lang._map_fire_event(s, stream=self._kernel_stream) for s in sync_ops])
         preactions.extend([self.lang._map_recreate_event(s) for s in sync_ops])
 
-
-        
         postactions = []
         postactions.extend([self.lang._map_fire_event(s, stream=self._host_stream) for s in sync_ops])
         postactions.extend([self.lang._map_wait_recreate_event(s, stream=self._memcpy_stream) for s in sync_ops])
@@ -1093,7 +1083,7 @@ class CudaOrchestrator(Orchestrator):
         # Turn `iet` into an AsyncCallable so that subsequent passes know
         # that we're happy for this Callable to be executed asynchronously
         name = self.sregistry.make_name(prefix='prefetch_host_to_device')
-        body = iet.body 
+        body = iet.body
         #+ (BlankLine,) + tuple(postactions))
         parameters = _cuda_derive_parameters(body)
         efunc = CudaHostFuncCallable(name, body, parameters=parameters)

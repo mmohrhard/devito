@@ -43,7 +43,6 @@ class CudaTasker(Asynchronous):
 
     @timed_pass(name='cuda-tasker')
     def process(self, clusters):
-        debug("performing CUDA tasking analysis..")
         return super().process(clusters)
 
     def callback(self, clusters, prefix):
@@ -134,7 +133,6 @@ class CudaTasker(Asynchronous):
                     assert lock.size == 1
                     indices = [0]
 
-                debug("found an async candidate")
                 tasks[c0].extend(flatten(
                     (CudaWithEvent(f, lock),) for i in indices
                 ))

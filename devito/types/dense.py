@@ -106,13 +106,6 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
             raise ValueError("`initializer` must be callable or buffer, not %s"
                              % type(initializer))
 
-    def __del__(self):
-        pass
-        # if self._device_allocator and self._device_data_ptr.value != 0:
-        #     debug("Freeing device memory for %s%s [%s] at %lx" % (self.name, self.shape_allocated, humanbytes(self.nbytes), self._device_data_ptr.value))
-        #     self._device_allocator.free(self._device_data_alloc_args)
-        #     self._device_data_ptr = c_restrict_void_p(0)
-
     def __eq__(self, other):
         # The only possibility for two DiscreteFunctions to be considered equal
         # is that they are indeed the same exact object

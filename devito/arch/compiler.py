@@ -327,8 +327,8 @@ class Compiler(GCCToolchain):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             _, _, _, recompiled = compile_from_string(self, target, code, src_file,
-                                                    cache_dir=cache_dir, debug=debug_build,
-                                                    sleep_delay=sleep_delay)
+                                                      cache_dir=cache_dir, debug=debug_build,
+                                                      sleep_delay=sleep_delay)
 
         return recompiled, src_file
 

@@ -6,7 +6,7 @@ void _cudaChecked(cudaError_t err, const char *file, int line,
                   const char *extra = nullptr) {
   if (err != cudaSuccess) {
     err = cudaGetLastError();
-    fprintf(stderr, "!E: %s:%d %s\n", file, line, cudaGetErrorString(err));
+    fprintf(stderr, "!!! CUDA Error in operator: %s:%d %s\n", file, line, cudaGetErrorString(err));
   }
 }
 
@@ -14,7 +14,7 @@ void _cudaChecked(cudaError_t err, const char *file, int line,
 void _cudaCheckKernelLaunch(dim3 grid, dim3 block, const char *file, int line) {
   cudaError_t err = cudaPeekAtLastError();
   if (err != cudaSuccess)
-    fprintf(stderr, "!E: %s:%d %s\n", file, line, cudaGetErrorString(err));
+    fprintf(stderr, "!!! CUDA Error after kernel launch: %s:%d %s\n", file, line, cudaGetErrorString(err));
 }
 
 #define CUDA_MAYBE_REALLOC_STATIC_TEMP(NAME, NBYTES)                           \
@@ -84,4 +84,10 @@ inline void _setupGrid(const char *gridName, dim3 &grid, dim3 &threadBlock, int 
 
   grid = dim3((int)ceil((float)x_size / (float)threadBlock.x), (int)ceil((float)y_size / (float)threadBlock.y),
               (int)ceil((float)z_size / (float)threadBlock.z));
+}
+
+inline int _cudaGetCurrentDevice() {
+    int device = -1;
+    CudaChecked(cudaGetDevice(&device));
+    return device;
 }
