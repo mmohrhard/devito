@@ -17,10 +17,10 @@ from devito.passes.iet.langbase import make_sections_from_imask
 from devito.symbolics.printer import ccode
 from devito.ir.iet.nodes import BlankLine, BusyWait, Conditional, Dereference, PointerCast, Return, Section, SyncSpot, Transfer, While
 from devito.tools.utils import as_list, as_mapper, as_tuple, dtype_to_ctype, filter_sorted, flatten, split
-from devito.types.parallel import CudaStream, DeviceRM, QueueID, SharedData, ThreadArray
+from devito.types.parallel import CudaStream, DeviceRM, QueueID, SharedData, ThreadArray, Lock, CudaEvent
 import numpy as np
 from sympy import Max
-from devito.logger import warning, debug
+from devito.logger import info, warning, debug
 from devito.arch import CUDA, NVIDIAX
 from devito.ir import (Call, Callable, CudaCall, DeviceCall, DummyExpr, DPtr, EntryFunction, List, CudaCallable,
                        Block, ParallelIteration, ParallelTree, Pragma, Definition, Iteration, Node,
@@ -368,34 +368,31 @@ class CudaBB(PragmaLangBB):
 
     @classmethod
     def _map_wait_event(cls, e, stream=None):
-        if stream is None:
-            stream = e.stream if e.stream is not None else 0
-        return List(body=[cls.mapper['wait-event'](stream, e.event)])
+        stream = stream if stream is not None else 0
+        return List(body=[cls.mapper['wait-event'](stream, e.handle)])
 
     @classmethod
     def _map_wait_recreate_event(cls, e, stream=None):
-        if stream is None:
-            stream = e.stream if e.stream is not None else 0
-        return List(body=[cls.mapper['wait-event'](stream, e.event),
-                          cls.mapper['destroy-event'](e.event),
-                          cls.mapper['create-event'](e.event),
+        stream = stream if stream is not None else 0
+        return List(body=[cls.mapper['wait-event'](stream, e.handle),
+                          cls.mapper['destroy-event'](e.handle),
+                          cls.mapper['create-event'](e.handle),
                           ])
 
     @classmethod
     def _map_create_event(cls, e):
-        return cls.mapper['create-event'](e.event)
+        return cls.mapper['create-event'](e.handle)
 
     @classmethod
     def _map_recreate_event(cls, e):
-        return List(body=[cls.mapper['destroy-event'](e.event),
-                          cls.mapper['create-event'](e.event),
+        return List(body=[cls.mapper['destroy-event'](e.handle),
+                          cls.mapper['create-event'](e.handle),
                           ])
 
     @classmethod
     def _map_fire_event(cls, e, stream=None):
-        if stream is None:
-            stream = e.stream if e.stream is not None else 0
-        return cls.mapper['record-event'](e.event, stream)
+        stream = stream if stream is not None else 0
+        return cls.mapper['record-event'](e.handle, stream)
 
 class CudaAtomicExpression(Expression):
     def __init__(self, expr, pragmas=None, init=None, operation=None):
@@ -979,17 +976,6 @@ class CudaOrchestrator(Orchestrator):
     _host_stream = HostStream()
     _kernel_stream = KernelStream()
 
-    def _make_waitlock(self, iet, sync_ops):
-        waitloop = List(
-            header=c.Comment("Wait for `%s` to be copied to the host" %
-                             ",".join(s.function.name for s in sync_ops)),
-            body=[self.lang._map_wait_recreate_event(s, stream=self._kernel_stream) for s in sync_ops],
-            footer=c.Line()
-        )
-
-        iet = List(body=flatten([(waitloop,), iet.body]))
-        return iet, []
-
     def _make_waitevent(self, iet, sync_ops):
         waitloop = List(
             header=c.Comment("Wait for `%s` to be copied to the host" %
@@ -1002,20 +988,7 @@ class CudaOrchestrator(Orchestrator):
 
         return iet, []
 
-    def _make_releaselock(self, iet, sync_ops):
-        preactions = []
-        preactions.extend(self.lang._map_fire_event(s) for s in sync_ops)
-
-        iet = List(
-            header=c.Comment("Release lock(s) as soon as possible"),
-            body=preactions + [iet]
-        )
-
-        return iet, []
-
     def _make_withlock(self, iet, sync_ops):
-        qid = QueueID()
-
         preactions = [c.Comment("Block the copy until it's safe"),
                       BlankLine]
 
@@ -1093,8 +1066,31 @@ class CudaOrchestrator(Orchestrator):
 
         return iet, [efunc]
 
+    def _nop(self, _iet, _sync_ops):
+        return _iet, []
+
+    def _replace_locks(self, iet):
+        # replace locks with CUDA events
+        lock_mapper = {}
+
+        for n in FindNodes(SyncSpot).visit(iet):
+            replace_ops = []
+            for s in n.sync_ops:
+                if s.handle:
+                    info(f"replacing {s.handle} in {s} with a CUDA event")
+                    s.handle = CudaEvent(s.handle.name)
+                replace_ops.append(s)
+
+            lock_mapper[n] = SyncSpot(replace_ops, n.body)
+
+        iet = Uxreplace(lock_mapper).visit(iet)
+
+        return iet
+
     @iet_pass
     def process(self, iet):
+        iet = self._replace_locks(iet)
+
         sync_spots = FindNodes(SyncSpot).visit(iet)
 
         if not sync_spots:
@@ -1103,11 +1099,11 @@ class CudaOrchestrator(Orchestrator):
             return iet, {}
 
         callbacks = OrderedDict([
-            (CudaWaitEvent, self._make_waitlock),
-            (CudaWithEvent, self._make_withlock),
-            (CudaFireEvent, self._make_withlock),
-            (CudaFetchUpdate, self._make_fetchupdate),
-            (CudaPrefetchUpdate, self._make_prefetchupdate),
+            (WithLock, self._make_withlock),
+            (WaitLock, self._make_waitlock),
+            (FetchUpdate, self._make_fetchupdate),
+            (PrefetchUpdate, self._make_prefetchupdate),
+            (ReleaseLock, self._nop)
         ])
 
         # The SyncOps are to be processed in a given order
@@ -1119,7 +1115,7 @@ class CudaOrchestrator(Orchestrator):
         for n in sync_spots:
             mapper = as_mapper(n.sync_ops, lambda i: type(i))
             for t in sorted(mapper, key=key):
-                events.extend([e.event for e in mapper[t] if e.event is not None])
+                events.extend([e.handle for e in mapper[t] if e.handle is not None])
                 subs[n], v = callbacks[t](subs.get(n, n), mapper[t])
                 efuncs.extend(v)
 
@@ -1319,17 +1315,16 @@ def lower_async_calls(iet, track=None, sregistry=None):
         activation.extend([DummyExpr(FieldFromComposite(i.name, sdata[d]), i)
                            for i in sdata.ncfields])
 
-        activation = activation + [
-
+        activation.append(
            c.Statement("cudaLaunchHostFunc(%s, (cudaHostFn_t)%s, %s)" % (n.stream if n.stream is not None else 0, n.name, ccode(sbase + d))),
-            ]
+        )
+
         activation = List(
             header=[c.Line(), c.Comment("Activate background task")],
             body=activation,
             footer=c.Line()
         )
         mapper[n] = activation
-
 
     if mapper:
         # Inject activation

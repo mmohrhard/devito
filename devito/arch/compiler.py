@@ -531,6 +531,14 @@ class PGICompiler(Compiler):
         self.MPICXX = 'mpicxx'
 
 
+class NvidiaCompiler(PGICompiler):
+
+    def __lookup_cmds__(self):
+        self.CC = 'nvc++'
+        self.CXX = 'nvc++'
+        self.MPICC = 'mpic++'
+        self.MPICXX = 'mpicxx'
+
 class CudaCompiler(Compiler):
 
     def __init__(self, *args, **kwargs):

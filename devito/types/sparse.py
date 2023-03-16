@@ -6,7 +6,7 @@ import numpy as np
 from cached_property import cached_property
 
 from devito.data.allocators import default_allocator
-from devito.logger import info
+from devito.logger import debug
 from devito.finite_differences import generate_fd_shortcuts
 from devito.mpi import MPI, SparseDistributor, safe_Bcast, safe_Reduce_inplace
 from devito.operations import LinearInterpolator, PrecomputedInterpolator

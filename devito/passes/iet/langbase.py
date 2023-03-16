@@ -217,6 +217,7 @@ class DeviceAwareMixin(object):
 
     @iet_pass
     def initialize(self, iet, options=None):
+        from devito.passes.iet.languages.cuda import CudaHostFuncCallable
         """
         An `iet_pass` which transforms an IET such that the target language
         runtime is initialized.
@@ -310,6 +311,11 @@ class DeviceAwareMixin(object):
 
             return iet, {}
 
+        # CUDA host functions must not call CUDA runtime API, including the cudaSetDevice call.
+        @_initialize.register(CudaHostFuncCallable)
+        def _(iet):
+            return iet, {}
+        
         @_initialize.register(AsyncCallable)
         def _(iet):
             devicetype = as_list(self.lang[self.platform])
