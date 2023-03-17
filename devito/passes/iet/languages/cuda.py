@@ -600,16 +600,17 @@ class DeviceCudaDataManager(DataManager):
         Allocate a local Array in the device high bandwidth memory.
         """
         # Create a local static pointer so we can persist between runs
-        decl = Definition(obj, initvalue="nullptr", prefix="static")
+        decl = Definition(obj, initvalue="nullptr")
         doalloc = self.lang['device-alloc']
         dofree = self.lang['device-free']
 
         nbytes = SizeOf(obj._C_typedata)*obj.size
         init = doalloc(nbytes, None, retobj=obj._C_symbol)
-        allocs = (decl, Conditional(CondEq(obj._C_symbol, NullPointer()), init))
+        #allocs = (decl, Conditional(CondEq(obj._C_symbol, NullPointer()), init))
+        allocs = (decl, Call("PER_DEVICE_TEMP_GET", (ReservedWord(str(obj._C_typedata)), obj._C_symbol, nbytes)))
 
-        free = dofree(obj._C_name, None)
-
+        #free = dofree(obj._C_name, None)
+        free = Call("PER_DEVICE_TEMP_DESTROY", (obj._C_name,))
         free = Conditional(DeviceRM(), free)
 
         storage.update(obj, site, allocs=allocs, frees=free)
@@ -668,59 +669,17 @@ class DeviceCudaDataManager(DataManager):
         """
         Allocate a mapped Array in the host high bandwidth memory.
         """
-        static_decl = Definition(obj, initvalue="nullptr", prefix="static")
-        decl = Definition(obj, initvalue="nullptr")
-        # Allocating a mapped Array on the high bandwidth memory requires
-        # multiple statements, hence we implement it as a generic Callable
-        # to minimize code size, since different arrays will ultimately be
-        # able to reuse the same abstract Callable
 
-        memptr = VOID(Byref(obj._C_symbol), '**')
-        alignment = obj._data_alignment
-        nbytes = SizeOf(obj._C_typedata)
-        alloc0 = self.lang['host-alloc'](memptr, alignment, nbytes)
-
-        nbytes_param = Symbol(name='nbytes', dtype=np.uint64, is_const=True)
         nbytes_arg = SizeOf(obj.indexed._C_typedata)*obj.size
 
-        ffp1 = FieldFromPointer(obj._C_field_data, obj._C_symbol)
-        memptr = VOID(Byref(ffp1), '**')
-        alloc1 = self.lang['host-alloc'](memptr, alignment, nbytes_param)
+        alloc = List(body=[
+            Call("PER_DEVICE_ARRAY_TEMP_DECLARE", (obj._C_symbol, ReservedWord(obj._C_typedata))),
+            Call("PER_DEVICE_ARRAY_TEMP_GET", (obj._C_symbol, nbytes_arg), retobj=obj),
+        ])
 
-        ffp2 = FieldFromPointer(obj._C_field_device_data, obj._C_symbol)
-        alloc2 = self.lang['device-alloc'](nbytes_param, retobj=ffp2)
+        free = Conditional(DeviceRM(), Call("PER_DEVICE_ARRAY_TEMP_DESTROY", (obj._C_symbol,)))
 
-        ffp0 = FieldFromPointer(obj._C_field_nbytes, obj._C_symbol)
-        init0 = DummyExpr(ffp0, nbytes_param)
-        init1 = DummyExpr(ffp1, 0)
-        init2 = DummyExpr(ffp2, 0)
-
-        free0 = self.lang['host-free'](ffp1)
-
-        free1 = self.lang['device-free'](ffp2)
-
-        free2 = self.lang['host-free'](obj._C_symbol)
-
-        ret = Return(obj._C_symbol)
-
-        alloc_name = self.sregistry.make_name(prefix='alloc')
-        body = (decl, alloc0, init0, init1, init2, alloc1, alloc2, ret)
-
-        efunc0 = make_callable(alloc_name, body, retval=obj._C_typename)
-        assert len(efunc0.parameters) == 1  # `nbytes_param`
-
-        free_name = self.sregistry.make_name(prefix='free')
-        efunc1 = make_callable(free_name, (free0, free1, free2))
-
-        assert len(efunc1.parameters) == 1  # `obj`
-        alloc = List(body=[static_decl, Conditional(CondOr(CondEq(VOID(obj._C_symbol, '*'), 0), CondNe(nbytes_arg, ffp0)),
-                            List(body=[
-                                    Conditional(CondNe(VOID(obj._C_symbol, '*'), 0), Block(body=[Call(free_name, obj),
-                                                                                                 c.Assign(obj._C_symbol, 0)])),
-                                    Call(alloc_name, nbytes_arg, retobj=obj, declares=False)]))])
-        free = Conditional(DeviceRM(), Call(free_name, obj))
-
-        storage.update(obj, site, allocs=alloc, frees=free, efuncs=(efunc0, efunc1))
+        storage.update(obj, site, allocs=alloc, frees=free)
 
     def _alloc_object_array_on_low_lat_mem(self, site, obj, storage):
         """
