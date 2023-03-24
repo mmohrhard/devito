@@ -125,7 +125,7 @@ class DeviceOperatorMixin(object):
 
     @classmethod
     def _normalize_gpu_fit(cls, **kwargs):
-        if any(i in kwargs['mode'] for i in ['tasking', 'streaming', 'cuda-tasking', 'cuda-streaming']):
+        if any(i in kwargs['mode'] for i in ['tasking', 'streaming']):
             return None
         else:
             return cls.GPU_FIT
@@ -274,8 +274,8 @@ class DeviceCustomOperator(DeviceOperatorMixin, CustomOperator):
         return {
             'buffering': lambda i: buffering(i, callback, sregistry, options),
             'blocking': lambda i: blocking(i, sregistry, options),
-            'tasking': Tasker(runs_on_host, sregistry).process,            
-            'streaming': Streaming(reads_if_on_host, sregistry).process,            
+            'tasking': Tasker(runs_on_host, sregistry).process,
+            'streaming': Streaming(reads_if_on_host, sregistry).process,
             'factorize': factorize,
             'fission': fission,
             'fuse': lambda i: fuse(i, options=options),
@@ -449,7 +449,7 @@ class DeviceCustomCudaOperator(DeviceCudaOperatorMixin, DeviceCustomOperator):
     @classmethod
     def _make_iet_passes_mapper(cls, **kwargs):
         mapper = super()._make_iet_passes_mapper(**kwargs)
-        mapper['cuda'] = mapper['parallel']        
+        mapper['cuda'] = mapper['parallel']
         mapper['pthreadify'] = mapper['cuda-events']
         mapper['linearize'] = mapper['cuda-linearize']
         return mapper
@@ -458,7 +458,7 @@ class DeviceCustomCudaOperator(DeviceCudaOperatorMixin, DeviceCustomOperator):
     def _make_clusters_passes_mapper(cls, **kwargs):
         mapper = super()._make_clusters_passes_mapper(**kwargs)
         return mapper
-    
+
     _known_passes = DeviceCustomOperator._known_passes + ('cuda', 'cuda-events')
     assert not (set(_known_passes) & set(DeviceCustomOperator._known_passes_disabled))
 

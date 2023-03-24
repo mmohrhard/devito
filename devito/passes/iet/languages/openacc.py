@@ -136,7 +136,7 @@ class AccBB(PragmaLangBB):
             c.Pragma('acc exit data delete(%s%s) finalize' % (i, j)),
         'map-exit-delete-if': lambda i, j, k:
             c.Pragma('acc exit data delete(%s%s) if(%s) finalize' % (i, j, k)),
-            
+
         'memcpy-to-device': lambda i, j, k:
             Call('acc_memcpy_to_device', [i, j, k]),
         'memcpy-to-device-wait': lambda i, j, k, l:
@@ -253,7 +253,7 @@ class DeviceAccizer(PragmaDeviceAwareTransformer):
 
             body = self.DeviceIteration(gpu_fit=self.gpu_fit, tile=tile, qid=self.default_qid, **root.args)
             partree = ParallelTree([], body, nthreads=nthreads)
-                
+
             return root, partree
         else:
             if offloadable:
@@ -275,7 +275,7 @@ class DeviceAccizer(PragmaDeviceAwareTransformer):
 
         efuncs = []
         subs = {}
-        for n in sync_spots:                        
+        for n in sync_spots:
             if [x for x in n.sync_ops if isinstance(x, WaitLock)]:
                 subs[n] = (n, self.lang._map_wait(self.default_qid))
 
@@ -309,7 +309,7 @@ class DeviceAccDataManager(PragmaDeviceAwareDataManager):
 
     @iet_pass
     def place_devptr(self, iet, **kwargs):
-    
+
         """
         Transform `iet` such that device pointers are used in DeviceCalls.
 
