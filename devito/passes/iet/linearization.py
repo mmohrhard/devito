@@ -1,7 +1,6 @@
 from functools import singledispatch
 
 import numpy as np
-from devito.ir.iet.cuda import CudaCallable
 
 from devito.data import FULL
 from devito.ir import (BlankLine, Call, DummyExpr, Dereference, List, PointerCast,
@@ -136,7 +135,7 @@ def linearize_accesses(iet, key, track, sregistry):
         release = calls & v.held
         v.held.difference_update(release)
         if f in candidates or release:
-            if f in defines and not isinstance(iet, CudaCallable):
+            if f in defines:
                 stmts0.extend(v.stmts0)
                 stmts1.extend(v.stmts1)
             else:

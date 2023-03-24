@@ -430,7 +430,7 @@ class CudaAllocator(MemoryAllocator):
 
             return c_pointer, (c_pointer, c_bytesize, self.type)
         else:
-            self._throw_cuda_error(f"allocating {humanbytes(c_bytesize)} of {self.type} memory")
+            self._throw_cuda_error(f"allocating {humanbytes(c_bytesize.value)} of {self.type} memory")
 
     def free(self, c_pointer, c_bytesize, type):
         if self.type == 'host':
@@ -532,11 +532,13 @@ def default_allocator(name=None):
     if configuration['develop-mode']:
         return ALLOC_GUARD
 
-    if configuration['platform'].name != 'knl' and ALLOC_CUDA_HOST.available():
+    is_knl = configuration['platform'].name.startswith('knl')
+    
+    if not is_knl and ALLOC_CUDA_HOST.available():
         return ALLOC_CUDA_HOST
 
     if NumaAllocator.available():
-        if configuration['platform'].name == 'knl' and infer_knl_mode() == 'flat':
+        if not is_knl and infer_knl_mode() == 'flat':
             return ALLOC_KNL_MCDRAM
         else:
             return ALLOC_NUMA_LOCAL

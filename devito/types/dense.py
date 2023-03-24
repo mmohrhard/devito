@@ -139,10 +139,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                     debug("Allocating device memory for %s%s [%s]" % (self.name, self.shape_allocated, humanbytes(self.nbytes)))
                     self._device_data, self._device_data_alloc_args = self._device_allocator.alloc(self.shape_allocated, self.dtype)
                     self._device_data_ptr = self._device_data.ctypes.data_as(c_restrict_void_p)
-                    debug("done!")
-
-                debug("Memory is 0x%lx bytes at 0x%lx on the host, and 0x%lx on the device" % (self.nbytes, self._data.ctypes.data_as(c_restrict_void_p).value, self._device_data_ptr.value or 0))
-
+                    debug("Memory is 0x%lx bytes at 0x%lx on the host, and 0x%lx on the device" % (self.nbytes, self._data.ctypes.data_as(c_restrict_void_p).value, self._device_data_ptr.value or 0))
+                    
                 # Initialize data
                 if self._first_touch:
                     assign(self, 0)

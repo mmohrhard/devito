@@ -409,7 +409,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
 
         root = candidates[0]
         if self._is_offloadable(root):
-            kernel_name = "kernel%s" % (self.count)
+            kernel_name = f"{self.kernel_basename}{self.count}"
 
             kernel, extracted_iterators = self._make_cuda_kernel(kernel_name, root)
 
@@ -450,8 +450,11 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
     def _make_parallel(self, iet):
         mapper = {}
         kernels = []
-
-        # the _cudaChecked function is defined in devito_cuda.cuh
+        
+        # Name kernels according to the name of the EntryFunction by default so that
+        # profiling multiple operators in a single Nsight run produces more
+        # meaningful summary data
+        self.kernel_basename = FindNodes(EntryFunction).visit(iet)[0].name + "_kernel"
 
         for tree in retrieve_iteration_tree(iet, mode='superset'):
             # Get the parallelizable Iterations in `tree`

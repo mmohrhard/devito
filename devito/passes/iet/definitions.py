@@ -151,8 +151,8 @@ class DataManager(object):
         """
         Allocate a mapped Array in the host high bandwidth memory.
         """
-        static_decl = Definition(obj, initvalue="nullptr", prefix="static")
-        decl = Definition(obj, initvalue="nullptr")
+        decl = Definition(obj)
+
         # Allocating a mapped Array on the high bandwidth memory requires
         # multiple statements, hence we implement it as a generic Callable
         # to minimize code size, since different arrays will ultimately be
@@ -171,28 +171,24 @@ class DataManager(object):
         alloc1 = self.lang['host-alloc'](memptr, alignment, nbytes_param)
 
         ffp0 = FieldFromPointer(obj._C_field_nbytes, obj._C_symbol)
-        init0 = DummyExpr(ffp0, nbytes_param)
-        init1 = DummyExpr(ffp1, 0)
+        init = DummyExpr(ffp0, nbytes_param)
 
         free0 = self.lang['host-free'](ffp1)
 
-        free2 = self.lang['host-free'](obj._C_symbol)
+        free1 = self.lang['host-free'](obj._C_symbol)
 
         ret = Return(obj._C_symbol)
 
-        alloc_name = self.sregistry.make_name(prefix='alloc')
-        body = (decl, alloc0, init0, init1, alloc1, ret)
-        #body = (decl, alloc0, alloc1, init, ret)
-        efunc0 = make_callable(alloc_name, body, retval=obj._C_typename)
+        name = self.sregistry.make_name(prefix='alloc')
+        body = (decl, alloc0, alloc1, init, ret)
+        efunc0 = make_callable(name, body, retval=obj._C_typename)
         assert len(efunc0.parameters) == 1  # `nbytes_param`
+        alloc = Call(name, nbytes_arg, retobj=obj)
 
-        free_name = self.sregistry.make_name(prefix='free')
-        efunc1 = make_callable(free_name, (free0, free2))
-        #efunc1 = make_callable(name, (free0, free2))
+        name = self.sregistry.make_name(prefix='free')
+        efunc1 = make_callable(name, (free0, free1))
         assert len(efunc1.parameters) == 1  # `obj`
-        alloc = Call(alloc_name, nbytes_arg, retobj=obj)
-        
-        free = Call(free_name, obj)
+        free = Call(name, obj)
 
         storage.update(obj, site, allocs=alloc, frees=free, efuncs=(efunc0, efunc1))
 
@@ -396,10 +392,7 @@ class DeviceAwareDataManager(DataManager):
         init = doalloc(nbytes, deviceid, retobj=obj)
         allocs = (init, ) if isinstance(init, Call) and init.retobj == obj else (decl, init)
 
-        free = dofree(obj._C_name, deviceid)
-
-        
-        free = Conditional(DeviceRM(), free)
+        free = Conditional(DeviceRM(), dofree(obj._C_name, deviceid))
 
         storage.update(obj, site, allocs=allocs, frees=free)
 
@@ -412,8 +405,8 @@ class DeviceAwareDataManager(DataManager):
         if not obj._mem_mapped:
             return
 
-        mmap = None# self.lang._map_alloc(obj)
-        unmap = None#self.lang._map_delete(obj)
+        mmap = self.lang._map_alloc(obj)
+        unmap = self.lang._map_delete(obj)
 
         storage.update(obj, site, maps=mmap, unmaps=unmap)
 
