@@ -394,6 +394,13 @@ class CudaAllocator(MemoryAllocator):
 
         try:
             cls.lib = ctypes.CDLL(handle)
+            cls.lib.cudaGetErrorName.restype = ctypes.c_char_p
+            cls.lib.cudaGetErrorString.restype = ctypes.c_char_p
+
+            c_devcount = ctypes.c_ulong(0)
+            ret = cls.lib.cudaGetDeviceCount(ctypes.byref(c_devcount))
+            if ret != 0 or c_devcount == 0:
+                cls.lib = None
         except OSError:
             cls.lib = None
 
@@ -445,7 +452,7 @@ class CudaAllocator(MemoryAllocator):
 
     def _throw_cuda_error(self, msg):
         err = self.lib.cudaGetLastError()
-        raise RuntimeError(f"CUDA error {msg}: {self.lib.cudaGetErrorName(err)} - {self.lib.cudaGetErrorString(err)}")
+        raise RuntimeError(f"CUDA error {msg}: {self.lib.cudaGetErrorName(err).decode()} - {self.lib.cudaGetErrorString(err).decode()}")
 
     def _current_device(self):
         c_device = ctypes.c_int32(-1)
@@ -533,7 +540,7 @@ def default_allocator(name=None):
         return ALLOC_GUARD
 
     is_knl = configuration['platform'].name.startswith('knl')
-    
+
     if not is_knl and ALLOC_CUDA_HOST.available():
         return ALLOC_CUDA_HOST
 
