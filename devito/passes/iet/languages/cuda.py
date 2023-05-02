@@ -7,9 +7,9 @@ from sympy import Or
 from devito.ir.iet.visitors import Visitor
 
 from devito.symbolics.extended_sympy import FieldFromComposite, Null, ReservedWord
-from devito.types.misc import Pointer
+from devito.types.misc import Global, Pointer
 from devito.tools.data_structures import Bunch, DefaultOrderedDict
-from devito.ir.support.syncs import CudaFetchUpdate, CudaFireEvent, CudaPrefetchUpdate, CudaWaitEvent, CudaWithEvent, FetchUpdate, PrefetchUpdate, ReleaseLock, WaitLock, WithLock
+from devito.ir.support.syncs import FetchUpdate, PrefetchUpdate, ReleaseLock, WaitLock, WithLock
 from devito.ir.iet.efunc import AsyncCall, AsyncCallable, ThreadCallable
 from devito.ir.iet.cuda import CudaTransferDirection
 from devito.passes.iet.definitions import DeviceAwareDataManager, Storage
@@ -45,9 +45,49 @@ from devito.tools import filter_ordered
 from devito.types import DevicePointer, Symbol, Constant, DeviceRM, DeviceCreate, UpdateDevice, UpdateHost
 from devito.types.dense import AliasFunction
 
-__all__ = ['DeviceCudaizer', 'DeviceCudaDataManager', 'CudaOrchestrator', 'cuda_eventify']
+__all__ = ['DeviceCudaizer', 'DeviceCudaDataManager', 'CudaOrchestrator', 'cuda_memcpy', 'cuda_eventify', 'KernelStream', 'NcclStream', 'CudaChecked']
 
 
+class KernelStream(CudaStream, Global):
+    def __init__(cls, *args, **kwargs):
+        super().__init__("kernel_stream")
+
+    def __new__(cls, *args):
+        return super().__new__(cls, "kernel_stream")
+
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls, "kernel_stream")
+
+class MemCopyStream(CudaStream, Global):
+    def __init__(cls, *args, **kwargs):
+        super().__init__("memcpy_stream")
+
+    def __new__(cls, *args):
+        return super().__new__(cls, "memcpy_stream")
+    
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls, "memcpy_stream")
+
+class HostStream(CudaStream, Global):
+    def __init__(cls, *args, **kwargs):
+        super().__init__("host_stream")
+
+    def __new__(cls, *args):
+        return super().__new__(cls, "host_stream")
+    
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls, "host_stream")
+    
+class NcclStream(CudaStream, Global):
+    def __init__(cls, *args, **kwargs):
+        super().__init__("nccl_stream")
+
+    def __new__(cls, *args):
+        return super().__new__(cls, "nccl_stream")
+    
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls, "nccl_stream")
+    
 class DeviceCudaIteration(ParallelIteration):
 
     @classmethod
@@ -219,15 +259,15 @@ class CudaCheckError(CLiteral):
         super().__init__('if (cudaPeekAtLastError() != 0 ) { cudaError_t err = cudaGetLastError(); printf("\\n!E %s: %s\\n",cudaGetErrorName(err), cudaGetErrorString(err));}')
 
 class CudaChecked(Call):
-    def __init__(self, arguments=None):
-        super().__init__("CudaChecked", arguments=[arguments])
+    def __init__(self, arguments=None, name=None):
+        super().__init__("CudaChecked", arguments=tuple(flatten([arguments])))
 
     @cached_property
     def expr_symbols(self):
         return flatten([x.expr_symbols for x in flatten(self.arguments)])
 
 class NullPointer(ReservedWord):
-    def __new__(cls):
+    def __new__(cls, *args, **kwargs):
         return super().__new__(cls, "nullptr")
 
 class CudaBB(PragmaLangBB):
@@ -235,7 +275,13 @@ class CudaBB(PragmaLangBB):
     mapper = {
         # Misc
         'name': 'CUDA',
-        'headers': ['cuda.h', 'cuda_runtime_api.h', 'nvtx3/nvToolsExt.h', 'stdio.h', 'assert.h', 'devito/devito_cuda.cuh'],
+        'headers': ['cuda.h', 'cuda_runtime_api.h', 'nvtx3/nvToolsExt.h', 'stdio.h', 'assert.h', 'devito/devito_cuda.cuh', 'nccl.h'],
+        'global-decls': [
+            Definition(HostStream(), initvalue = "nullptr", prefix="static"),
+            Definition(MemCopyStream(), initvalue = "nullptr", prefix="static"),
+            Definition(KernelStream(), initvalue = "nullptr", prefix="static"),
+            Definition(NcclStream(), initvalue = "nullptr", prefix="static")
+        ],
         # Platform mapping
         CUDA: None,
         NVIDIAX: None,
@@ -243,13 +289,10 @@ class CudaBB(PragmaLangBB):
         'aligned': lambda i:
             '__attribute__((aligned(%d)))' % i,
         'init': lambda args:
-            List(body=[Definition(HostStream(), initvalue=NullPointer(), prefix="static"),
-                       Definition(MemCopyStream(), initvalue=NullPointer(), prefix="static"),
-                       Definition(KernelStream(), initvalue=NullPointer(), prefix="static"),
-
-                       Conditional(CondEq(HostStream(), NullPointer()), Call("cudaStreamCreateWithFlags", (Byref(HostStream()), "cudaStreamNonBlocking"))),
+            List(body=[Conditional(CondEq(HostStream(), NullPointer()), Call("cudaStreamCreateWithFlags", (Byref(HostStream()), "cudaStreamNonBlocking"))),
                        Conditional(CondEq(MemCopyStream(), NullPointer()), Call("cudaStreamCreateWithFlags", (Byref(MemCopyStream()), "cudaStreamNonBlocking"))),
                        Conditional(CondEq(KernelStream(), NullPointer()), Call("cudaStreamCreateWithFlags", (Byref(KernelStream()), "cudaStreamNonBlocking"))),
+                       Conditional(CondEq(NcclStream(), NullPointer()), Call("cudaStreamCreateWithFlags", (Byref(NcclStream()), "cudaStreamNonBlocking"))),
 
                        Call("nvtxRangePush", ("__FUNCTION__", )),
             ]),
@@ -393,6 +436,14 @@ class CudaBB(PragmaLangBB):
     def _map_fire_event(cls, e, stream=None):
         stream = stream if stream is not None else 0
         return cls.mapper['record-event'](e.handle, stream)
+    
+    @classmethod
+    def _get_num_devices(cls, platform):
+        ngpus = Symbol(name='_num_gpus')
+        return ngpus, List(body=[
+            c.Initializer(c.Value("int", "_num_gpus"), 0),
+            Call("cudaGetDeviceCount", (INT(Byref(ngpus), '*')))
+        ])
 
 class CudaAtomicExpression(Expression):
     def __init__(self, expr, pragmas=None, init=None, operation=None):
@@ -454,7 +505,10 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
         # Name kernels according to the name of the EntryFunction by default so that
         # profiling multiple operators in a single Nsight run produces more
         # meaningful summary data
-        self.kernel_basename = FindNodes(EntryFunction).visit(iet)[0].name + "_kernel"
+        try:
+            self.kernel_basename = FindNodes(EntryFunction).visit(iet)[0].name + "_kernel"
+        except IndexError:
+            self.kernel_basename = "kernel"
 
         for tree in retrieve_iteration_tree(iet, mode='superset'):
             # Get the parallelizable Iterations in `tree`
@@ -472,8 +526,8 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
                 kernels.extend(kernels_gen)
 
 
-        iet = Transformer(mapper).visit(iet)
-        attrs = {'efuncs': kernels, 'includes': self.lang['headers']}
+        iet = Transformer(mapper).visit(iet)        
+        attrs = {'efuncs': kernels, 'includes': self.lang['headers'], 'globals': self.lang['global-decls']}
 
         return iet, attrs
 
@@ -911,26 +965,6 @@ class CudaHostFuncCall(AsyncCall):
 class CudaHostFuncCallable(AsyncCallable):
     pass
 
-class KernelStream(CudaStream):
-    def __init__(cls):
-        super().__init__("kernel_stream")
-
-    def __new__(cls):
-        return super().__new__(cls, name="kernel_stream")
-
-class MemCopyStream(CudaStream):
-    def __init__(cls):
-        super().__init__("memcpy_stream")
-
-    def __new__(cls):
-        return super().__new__(cls, name="memcpy_stream")
-
-class HostStream(CudaStream):
-    def __init__(cls):
-        super().__init__("host_stream")
-    def __new__(cls):
-        return super().__new__(cls, name="host_stream")
-
 class CudaOrchestrator(Orchestrator):
     lang = CudaBB
 
@@ -1090,6 +1124,8 @@ class CudaOrchestrator(Orchestrator):
         iet = iet._rebuild(body = List(body=[events, iet.body, CudaChecked(Call("cudaDeviceSynchronize", None))]))
 
         return iet, {'efuncs': efuncs}
+
+
 
 def cuda_eventify(graph, **kwargs):
     """

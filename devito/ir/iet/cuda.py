@@ -29,7 +29,7 @@ class DeviceCall(Call):
 class CudaCall(DeviceCall):
     is_Call = True
 
-    def __init__(self, name, grid, threads, arguments=None, writes=None, types=None, stream=None):
+    def __init__(self, name=None, grid=None, threads=None, arguments=None, writes=None, types=None, stream=None):
         super().__init__(name, arguments, None, writes=writes, types=types)
         self._grid = grid
         self._threads = threads
@@ -74,7 +74,7 @@ class CudaCallable(DeviceFunction):
 
     _defines = None
 
-    def __init__(self, name, body, parameters=None, defines=None):
+    def __init__(self, name=None, body=None, parameters=None, defines=None):
         if isinstance(body, CallableBody):
             super().__init__(name, CudaCallableBody(body.body, body.init, body.unpacks, body.allocs, body.casts, body.objs, body.maps, body.unmaps, body.frees, body.fini), 'void', parameters=parameters, prefix='__global__')
         else:

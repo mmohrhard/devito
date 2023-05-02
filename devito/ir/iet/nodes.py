@@ -18,7 +18,7 @@ from devito.symbolics import ListInitializer, CallFromPointer, ccode
 from devito.tools import Signer, Tag, as_tuple, filter_ordered, filter_sorted, flatten
 from devito.types.basic import AbstractFunction, AbstractSymbol
 from devito.types.object import AbstractObject
-from devito.types import Indexed, Symbol
+from devito.types import Indexed, Symbol, Global
 
 __all__ = ['Node', 'Block', 'Expression', 'Callable', 'Call',
            'Conditional', 'Iteration', 'List', 'Section', 'TimedList', 'Prodder',
@@ -281,18 +281,22 @@ class Call(ExprStmt, Node):
                 retval.append(i.function)
             elif isinstance(i, Call):
                 retval.extend(i.functions)
-            else:
+            elif not isinstance(i, Global):
                 try:
                     v = i.free_symbols
                 except AttributeError:
                     continue
-                for s in v:
-                    try:
-                        # `try-except` necessary for e.g. Macro
-                        if isinstance(s.function, (AbstractFunction, AbstractObject)):
-                            retval.append(s.function)
-                    except AttributeError:
-                        continue
+
+                try:
+                    for s in v:
+                        try:
+                            # `try-except` necessary for e.g. Macro
+                            if isinstance(s.function, (AbstractFunction, AbstractObject)):
+                                retval.append(s.function)
+                        except AttributeError:
+                            continue
+                except TypeError:
+                    print(f"{v} is not an iterable on {self.name} argument {i} (of {self.arguments})")
         if self.base is not None:
             retval.append(self.base.function)
         if self.retobj is not None:

@@ -12,7 +12,7 @@ from cgen import Struct, Value, dtype_to_ctype as cgen_dtype_to_ctype
 
 __all__ = ['prod', 'as_tuple', 'is_integer', 'generator', 'grouper', 'split', 'roundm',
            'powerset', 'invert', 'flatten', 'single_or', 'filter_ordered', 'as_mapper',
-           'filter_sorted', 'dtype_to_cstr', 'dtype_to_ctype', 'dtype_to_mpitype',
+           'filter_sorted', 'dtype_to_cstr', 'dtype_to_ctype', 'dtype_to_mpitype', 'dtype_to_nccltype',
            'ctypes_to_cstr', 'ctypes_to_cgen', 'pprint', 'sweep', 'all_equal', 'as_list',
            'indices_to_slices', 'indices_to_sections', 'transitive_closure',
            'humanbytes', 'c_restrict_void_p']
@@ -217,6 +217,17 @@ def dtype_to_mpitype(dtype):
             np.int64: 'MPI_LONG',
             np.float64: 'MPI_DOUBLE'}[dtype]
 
+def dtype_to_nccltype(dtype):
+    """Map numpy types to NCCL datatypes."""
+    return {
+        np.ubyte: 'ncclUint8',
+        np.ushort: 'ncclUint16',
+        np.int8: 'ncclInt8',
+        np.uint8: 'ncclUint8',
+        np.int32: 'ncclInt32',
+        np.float32: 'ncclFloat32',
+        np.int64: 'ncclInt64',
+        np.float64: 'ncclFloat64'}[dtype]
 
 def ctypes_to_cstr(ctype, toarray=None, qualifiers=None):
     """Translate ctypes types into C strings."""

@@ -13,6 +13,8 @@ from devito.parameters import configuration
 from devito.tools import EnrichedTuple, as_tuple, ctypes_to_cstr, filter_ordered
 from devito.types import CompositeObject, Object
 
+from devito.logger import info
+
 # Maximum operation size for safe broadcast/reduce below
 MPI_NBYTES_MAX = 1024 * 1024 * 1024
 
@@ -198,6 +200,13 @@ class Distributor(AbstractDistributor):
             # mpi4py takes care of that when the object gets out of scope
             self._input_comm = (input_comm or MPI.COMM_WORLD).Clone()
 
+            from devito.mpi.nccl import NcclCommunicator
+            if NcclCommunicator.is_available():
+                info("NCCL is available - attempting to use it")
+                self._nccl_comm = NcclCommunicator(self._input_comm)
+            else:
+                info("NCCL is not available")
+
             if topology is None:
                 # `MPI.Compute_dims` sets the dimension sizes to be as close to each other
                 # as possible, using an appropriate divisibility algorithm. Thus, in 3D:
@@ -220,6 +229,7 @@ class Distributor(AbstractDistributor):
             else:
                 self._comm = input_comm
         else:
+            self._nccl_comm = None
             self._input_comm = None
             self._comm = MPI.COMM_NULL
             self._topology = tuple(1 for _ in range(len(shape)))
@@ -232,6 +242,10 @@ class Distributor(AbstractDistributor):
     def comm(self):
         return self._comm
 
+    @property
+    def nccl_comm(self):
+        return self._nccl_comm
+    
     @property
     def myrank(self):
         if self.comm is not MPI.COMM_NULL:
@@ -386,6 +400,11 @@ class Distributor(AbstractDistributor):
         """An Object representing the MPI communicator."""
         return MPICommObject(self.comm)
 
+    @cached_property
+    def _obj_nccl(self):
+        """ An object representing the NCCL communicator."""
+        return self._nccl_comm.comm_object
+    
     @cached_property
     def _obj_neighborhood(self):
         """

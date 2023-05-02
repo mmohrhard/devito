@@ -83,7 +83,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         self._data = None
         self._first_touch = kwargs.get('first_touch', configuration['first-touch'])
         self._allocator = kwargs.get('allocator') or default_allocator()
-        self._device_allocator = kwargs.get('device_allocator' or None)
+        self._device_allocator = kwargs.get('device_allocator', None)
         self._device_data_ptr = c_restrict_void_p(0)
         self._device_data = None
         initializer = kwargs.get('initializer')
@@ -201,6 +201,22 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         this *never* returns a view of the data. This method is for internal use only.
         """
         return self._data_allocated
+
+    @property
+    def _data_ro_buffer(self):
+        """
+        Read-only reference to the data. Unlike :attr:`data` and :attr:`data_with_halo`,
+        this *never* returns a view of the data. This method is for internal use only.
+        """
+        return self._data_ro_allocated
+
+    @property
+    def _data_wo_buffer(self):
+        """
+        Write-only reference to the data. Unlike :attr:`data` and :attr:`data_with_halo`,
+        this *never* returns a view of the data. This method is for internal use only.
+        """
+        return self._data_wo_allocated
 
     @property
     def _data_alignment(self):
@@ -569,6 +585,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         """
         self._mark_halo_dirty()
         self._halo_exchange()
+        self._data.setflags(write=True)
         return np.asarray(self._data)
 
     def _data_in_region(self, region, dim, side):
@@ -645,6 +662,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         This accessor does *not* support global indexing.
         """
         self._ensure_host_update()
+        self._halo_exchange()
         view = self._data[self._mask_inhalo]
         view.setflags(write=False)
         return np.asarray(view)
@@ -660,9 +678,28 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         This accessor does *not* support global indexing.
         """
         self._ensure_host_update()
-        view = self._data
+        self._halo_exchange()
+        view = self._data.view()
         view.setflags(write=False)
         return np.asarray(view)
+
+    @property
+    @_allocate_memory
+    def _data_wo_allocated(self):
+        """
+        Write-only view of the domain+inhalo+padding data values.
+        Writes done to this data are not guaranteed to be visible
+        anywhere until and unless _data_allocated() is called.
+
+        Notes
+        -----
+        This accessor does *not* support global indexing.
+        """
+        self._ensure_host_update()        
+        self._mark_halo_dirty()
+        self._data.setflags(write=True)
+        return np.asarray(self._data)
+
 
     @cached_property
     def local_indices(self):
@@ -818,6 +855,9 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
             raise RuntimeError("`%s` cannot perform a halo exchange as it has "
                                "no Grid attached" % self.name)
 
+        if not self._is_halo_dirty:
+            return
+        
         neighborhood = self._distributor.neighborhood
         comm = self._distributor.comm
 
@@ -848,8 +888,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                 # Communication
                 if transfer:
                     info(
-                        "  (%s:%s:%s) %s -> me -> %s",
-                        self.name, d.name, str(i), source, dest
+                        "  (%s:%s:%s) %s -> me(%s) -> %s",
+                        self.name, d.name, str(i), source, comm.rank, dest
                     )
                     did_transfer = True
 
@@ -862,7 +902,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         if did_transfer:
             end = monotonic()
             info(
-                "pythonland halo exchange for %s! (global shape %s) (%.2fs)",
+                "[rank %d] pythonland halo exchange for %s! (global shape %s) (%.2fs)",
+                comm.rank,
                 str(self),
                 str(self.shape_global),
                 end - start,
@@ -882,7 +923,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     def device_name(self):
         return "_device_data_" + self.name
     
-    def _arg_defaults(self, alias=None):
+    def _arg_defaults(self, alias=None, read=True, write=True):
         """
         A map of default argument values defined by this symbol.
 
@@ -892,7 +933,15 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
             To bind the argument values to different names.
         """
         key = alias or self
-        args = ReducerMap({key.name: self._data_buffer, key.device_name: self._device_data})
+
+        if read and write:
+            buf = self._data_buffer
+        elif read:
+            buf = self._data_ro_buffer
+        else:
+            buf = self._data_wo_buffer
+
+        args = ReducerMap({key.name: buf, key.device_name: self._device_data})
 
         # Collect default dimension arguments from all indices
         for i, s in zip(key.dimensions, self.shape):
@@ -912,11 +961,13 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         """
         # Add value override for own data if it is provided, otherwise
         # use defaults
+        read = kwargs.get("read", True)
+        write = kwargs.get("write", True)
         if self.name in kwargs:
             new = kwargs.pop(self.name)
             if isinstance(new, DiscreteFunction):
                 # Set new values and re-derive defaults
-                values = new._arg_defaults(alias=self).reduce_all()
+                values = new._arg_defaults(alias=self,read=read,write=write).reduce_all()
             else:
                 # We've been provided a pure-data replacement (array)
                 values = {self.name: new, self.device_name: None}
@@ -925,7 +976,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                     size = s - sum(self._size_nodomain[i])
                     values.update(i._arg_defaults(size=size))
         else:
-            values = self._arg_defaults(alias=self).reduce_all()
+            values = self._arg_defaults(alias=self,read=read,write=write).reduce_all()
 
         return values
 

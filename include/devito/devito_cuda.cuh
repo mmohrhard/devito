@@ -43,15 +43,18 @@ void _cudaChecked(cudaError_t err, const char *file, int line,
     err = cudaGetLastError();
     fprintf(stderr, "!!! CUDA Error in operator: %s:%d %s\n", file, line,
             cudaGetErrorString(err));
+    exit(1);
   }
 }
 
 #define CudaCheckLaunch(f) _cudaCheckKernelLaunch((f), )
 void _cudaCheckKernelLaunch(dim3 grid, dim3 block, const char *file, int line) {
   cudaError_t err = cudaPeekAtLastError();
-  if (err != cudaSuccess)
+  if (err != cudaSuccess) {
     fprintf(stderr, "!!! CUDA Error after kernel launch: %s:%d %s\n", file,
             line, cudaGetErrorString(err));
+    exit(1);
+  }
 }
 
 template <typename T> void _freeTempArrayData(T *array) {
@@ -91,7 +94,7 @@ uint64_t next_pow2(uint64_t x) {
 
 // Heuristic thread block sizing based on the grid
 // Not perfect, but it'll do for now
-inline void _setupGrid(const char *gridName, dim3 &grid, dim3 &threadBlock,
+void _setupGrid(const char *gridName, dim3 &grid, dim3 &threadBlock,
                        int x_size, int y_size, int z_size) {
   //  long gp = x_size * y_size * z_size;
   if (z_size > 128) {
@@ -117,4 +120,26 @@ inline int _cudaGetCurrentDevice() {
   int device = -1;
   CudaChecked(cudaGetDevice(&device));
   return device;
+}
+
+template<typename T>
+bool _cudaPointerIsAccessible(T* ptr) {
+  struct cudaPointerAttributes attr = cudaPointerAttributes{};
+  CudaChecked(cudaPointerGetAttributes(&attr, (const void *)ptr));
+  return attr.devicePointer != NULL;
+}
+
+template <typename T> bool _cudaPtrIsManaged(T *ptr) {
+    struct cudaPointerAttributes attr = cudaPointerAttributes{};
+    CudaChecked(cudaPointerGetAttributes(&attr, (const void *)ptr));
+    return attr.type == cudaMemoryType::cudaMemoryTypeManaged;
+}
+
+template <typename T> bool _cudaPtrIsDeviceAccessible(T* ptr) {
+    if (ptr == nullptr)
+        return false;
+
+    struct cudaPointerAttributes attr = cudaPointerAttributes{};
+    auto ret = cudaPointerGetAttributes(&attr, (const void *)ptr);
+    return ret == cudaSuccess && attr.devicePointer != NULL;
 }

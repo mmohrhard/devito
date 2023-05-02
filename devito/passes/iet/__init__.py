@@ -8,3 +8,4 @@ from .cuda_linearization import * # noqa
 from .asynchrony import *  # noqa
 from .instrument import *  # noqa
 from .languages import *  # noqa
+from .rewrite_memcpy import * # noqa

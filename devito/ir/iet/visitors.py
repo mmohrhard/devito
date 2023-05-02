@@ -14,7 +14,7 @@ from sympy import IndexedBase
 from devito.exceptions import VisitorException
 from devito.ir.iet.nodes import (Node, Iteration, Expression, ExpressionBundle,
                                  Call, Lambda, BlankLine, Section, AddressOf,
-                                 CLiteral)
+                                 CLiteral, List)
 from devito.ir.equations import OpInc
 from devito.ir.support.space import Backward
 from devito.symbolics import ccode, uxreplace, CondAnd
@@ -185,7 +185,7 @@ class CGen(Visitor):
                 ret.append(c.Value('%s __restrict' % i._C_typename, i._C_name))
             elif i.is_AbstractObject or i.is_Symbol:
                 ret.append(c.Value(i._C_typename, i._C_name))
-            else:
+            elif not i._C_typedata == "cudaStream_t":
                 ret.append(c.Value('void', '*_%s' % i._C_name))
         return ret
 
@@ -559,7 +559,10 @@ class CGen(Visitor):
                 c.Statement('CudaChecked(cudaFree(%s))' % (o.device_storage)),
                 c.Assign(o.device_storage, "nullptr")])))
 
-        return c.Collection(ops)
+        if o.direction == CudaTransferDirection.H2D:
+            return c.If('!_cudaPtrIsManaged(%s)' % o.host_storage, c.Block(ops), c.Assign(o.device_storage, o.host_storage))
+        else:        
+            return c.Collection(ops)
 
     def visit_CudaAlloc(self, o):
         alloc = c.Block([
@@ -687,6 +690,9 @@ class CGen(Visitor):
         # Definitions
         headers = [c.Define(*i) for i in o._headers] + [blankline]
 
+        # Global scoped code
+        global_code = [self._visit(List(body=o._globals))] + [blankline]
+
         # Header files
         includes = self._operator_includes(o) + [blankline]
 
@@ -697,7 +703,7 @@ class CGen(Visitor):
         typedecls = [i for j in typedecls for i in (j, blankline)]
 
         return c.Module(headers + includes + typedecls +
-                        esigns + [blankline, kernel] + efuncs)
+                        global_code + esigns + [blankline, kernel] + efuncs)
 
 
 class CInterface(CGen):

@@ -7,7 +7,7 @@ from devito.exceptions import InvalidOperator
 from devito.passes.equations import collect_derivatives
 from devito.passes.clusters import (Lift, Streaming, Tasker, blocking, buffering,
                                     cire, cse, factorize, fission, fuse,
-                                    optimize_pows)
+                                    optimize_pows, cuda_memcpy)
 from devito.passes.iet import (DeviceOmpTarget, DeviceAccTarget, DeviceCudaTarget, mpiize, hoist_prodders,
                                is_on_device, linearize, cuda_linearize, pthreadify, relax_incr_dimensions, cuda_eventify)
 
@@ -274,6 +274,7 @@ class DeviceCustomOperator(DeviceOperatorMixin, CustomOperator):
         return {
             'buffering': lambda i: buffering(i, callback, sregistry, options),
             'blocking': lambda i: blocking(i, sregistry, options),
+            'cuda-memcpy': lambda i: cuda_memcpy(i, sregistry=sregistry),
             'tasking': Tasker(runs_on_host, sregistry).process,
             'streaming': Streaming(reads_if_on_host, sregistry).process,
             'factorize': factorize,
@@ -459,7 +460,7 @@ class DeviceCustomCudaOperator(DeviceCudaOperatorMixin, DeviceCustomOperator):
         mapper = super()._make_clusters_passes_mapper(**kwargs)
         return mapper
 
-    _known_passes = DeviceCustomOperator._known_passes + ('cuda', 'cuda-events')
+    _known_passes = DeviceCustomOperator._known_passes + ('cuda', 'cuda-events', 'cuda-memcpy')
     assert not (set(_known_passes) & set(DeviceCustomOperator._known_passes_disabled))
 
 
