@@ -378,6 +378,7 @@ class DeviceAwareDataManager(DataManager):
         """
         super().__init__(sregistry)
         self.gpu_fit = options['gpu-fit']
+        self.gpu_nofit = options['gpu-nofit']
 
     def _alloc_local_array_on_high_bw_mem(self, site, obj, storage, devicerm=None):
         """

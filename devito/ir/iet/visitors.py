@@ -924,7 +924,7 @@ class FindSymbols(Visitor):
         'defines-aliases': lambda n: as_tuple(flatten(i._C_aliases for i in n.defines)),
     }
 
-    def __init__(self, mode='symbolics'):
+    def __init__(self, mode='symbolics', stop_filter=None):
         super().__init__()
 
         modes = mode.split('|')
@@ -933,16 +933,21 @@ class FindSymbols(Visitor):
         else:
             self.rule = lambda n: chain(*[self.rules[mode](n) for mode in modes])
 
+        if stop_filter:
+            self.stop_filter = stop_filter
+        else:
+            self.stop_filter = lambda n: False
+
     def _post_visit(self, ret):
         return sorted(ret, key=lambda i: i.name if hasattr(i, 'name') else str(i))
 
     def visit_tuple(self, o):
-        return self.Retval(*[self._visit(i) for i in o])
+        return self.Retval(*[self._visit(i) for i in o if not self.stop_filter(i)])
 
     visit_list = visit_tuple
 
     def visit_Node(self, o):
-        return self.Retval(self._visit(o.children), self.rule(o))
+        return self.Retval(*[self._visit(n) for n in o.children if not self.stop_filter(n)], self.rule(o))
 
     def visit_Operator(self, o):
         ret = self._visit(o.body)

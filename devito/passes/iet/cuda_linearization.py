@@ -8,7 +8,7 @@ from devito.ir import (BlankLine, Call, DummyExpr, Dereference, List, PointerCas
                        Transfer, FindNodes, FindSymbols, Transformer, Uxreplace)
 from devito.passes.iet.engine import iet_pass
 from devito.symbolics import DefFunction, MacroArgument, ccode
-from devito.tools import Bunch, DefaultOrderedDict, filter_ordered, prod
+from devito.tools import Bunch, DefaultOrderedDict, filter_ordered, flatten, prod
 from devito.types import Array, Symbol, FIndexed, Indexed, Wildcard
 from devito.types.basic import IndexedData
 from devito.types.dense import DiscreteFunction
@@ -68,7 +68,8 @@ def linearize_accesses(iet, key, track, sregistry):
     Turn Indexeds into FIndexeds and create the necessary access Macros.
     """
     # The `candidates` are all Functions that may be linearized inside `iet`
-    indexeds = FindSymbols('indexeds').visit(iet)
+    kernels = FindNodes(CudaCallable).visit(iet)
+    indexeds = flatten([FindSymbols('indexeds').visit(k) for k in kernels])
     candidates = filter_ordered(i.function for i in indexeds if key(i.function))
     candidates = sorted(candidates, key=lambda f: len(f.dimensions), reverse=True)
 
@@ -213,20 +214,25 @@ def linearize_pointers(iet, key):
     """
     Flatten n-dimensional PointerCasts/Dereferences.
     """
-    candidates = {f for f in FindSymbols().visit(iet) if key(f)}
+    global_mapper = {}
+    kernels = FindNodes(CudaCallable).visit(iet)
+    for kernel in kernels:
+        candidates = {f for f in FindSymbols().visit(kernel) if key(f)}
 
-    mapper = {}
+        mapper = {}
 
-    # Linearize casts, e.g. `float *u = (float*) u_vec->data`
-    mapper.update({n: n._rebuild(flat=True)
-                   for n in FindNodes(PointerCast).visit(iet)
-                   if n.function in candidates})
+        # Linearize casts, e.g. `float *u = (float*) u_vec->data`
+        mapper.update({n: n._rebuild(flat=True)
+                    for n in FindNodes(PointerCast).visit(iet)
+                    if n.function in candidates})
 
-    # Linearize array dereferences, e.g. `float *r1 = (float*) pr1[tid]`
-    mapper.update({n: n._rebuild(flat=True)
-                   for n in FindNodes(Dereference).visit(iet)
-                   if n.pointer.is_PointerArray and n.pointee in candidates})
+        # Linearize array dereferences, e.g. `float *r1 = (float*) pr1[tid]`
+        mapper.update({n: n._rebuild(flat=True)
+                    for n in FindNodes(Dereference).visit(iet)
+                    if n.pointer.is_PointerArray and n.pointee in candidates})
 
-    iet = Transformer(mapper).visit(iet)
+        global_mapper[kernel] = Transformer(mapper).visit(kernel)
+
+    iet = Transformer(global_mapper).visit(iet)
 
     return iet

@@ -2,6 +2,7 @@ from .engine import *  # noqa
 from .misc import *  # noqa
 from .orchestration import *  # noqa
 from .mpi import *  # noqa
+from .nccl import * # noqa
 from .definitions import *  # noqa
 from .linearization import *  # noqa
 from .cuda_linearization import * # noqa

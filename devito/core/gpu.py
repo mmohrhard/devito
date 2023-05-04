@@ -7,9 +7,9 @@ from devito.exceptions import InvalidOperator
 from devito.passes.equations import collect_derivatives
 from devito.passes.clusters import (Lift, Streaming, Tasker, blocking, buffering,
                                     cire, cse, factorize, fission, fuse,
-                                    optimize_pows, cuda_memcpy)
+                                    optimize_pows)
 from devito.passes.iet import (DeviceOmpTarget, DeviceAccTarget, DeviceCudaTarget, mpiize, hoist_prodders,
-                               is_on_device, linearize, cuda_linearize, pthreadify, relax_incr_dimensions, cuda_eventify)
+                               is_on_device, linearize, cuda_linearize, pthreadify, relax_incr_dimensions, cuda_eventify, cuda_memcpy)
 
 from devito.tools import as_tuple, timed_pass
 
@@ -109,6 +109,7 @@ class DeviceOperatorMixin(object):
         o['par-nested'] = np.inf  # Never use nested parallelism
         o['par-disabled'] = oo.pop('par-disabled', True)  # No host parallelism by default
         o['gpu-fit'] = as_tuple(oo.pop('gpu-fit', cls._normalize_gpu_fit(**kwargs)))
+        o['gpu-nofit'] = as_tuple(oo.pop('gpu-nofit', None))
 
         # Misc
         o['optcomms'] = oo.pop('optcomms', True)
@@ -473,7 +474,7 @@ def make_callbacks(options):
     """
 
     def is_on_host(f):
-        return not is_on_device(f, options['gpu-fit'])
+        return not is_on_device(f, options['gpu-fit'], options['gpu-nofit'])
 
     def runs_on_host(c):
         # The only situation in which a Cluster doesn't get offloaded to

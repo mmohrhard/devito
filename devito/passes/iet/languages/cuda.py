@@ -43,6 +43,7 @@ from devito.symbolics import Macro, cast_mapper
 
 from devito.tools import filter_ordered
 from devito.types import DevicePointer, Symbol, Constant, DeviceRM, DeviceCreate, UpdateDevice, UpdateHost
+from devito.types.basic import IndexedBase
 from devito.types.dense import AliasFunction
 
 __all__ = ['DeviceCudaizer', 'DeviceCudaDataManager', 'CudaOrchestrator', 'cuda_memcpy', 'cuda_eventify', 'KernelStream', 'NcclStream', 'CudaChecked']
@@ -64,7 +65,7 @@ class MemCopyStream(CudaStream, Global):
 
     def __new__(cls, *args):
         return super().__new__(cls, "memcpy_stream")
-    
+
     def __new__(cls, *args, **kwargs):
         return super().__new__(cls, "memcpy_stream")
 
@@ -74,20 +75,20 @@ class HostStream(CudaStream, Global):
 
     def __new__(cls, *args):
         return super().__new__(cls, "host_stream")
-    
+
     def __new__(cls, *args, **kwargs):
         return super().__new__(cls, "host_stream")
-    
+
 class NcclStream(CudaStream, Global):
     def __init__(cls, *args, **kwargs):
         super().__init__("nccl_stream")
 
     def __new__(cls, *args):
         return super().__new__(cls, "nccl_stream")
-    
+
     def __new__(cls, *args, **kwargs):
         return super().__new__(cls, "nccl_stream")
-    
+
 class DeviceCudaIteration(ParallelIteration):
 
     @classmethod
@@ -436,7 +437,7 @@ class CudaBB(PragmaLangBB):
     def _map_fire_event(cls, e, stream=None):
         stream = stream if stream is not None else 0
         return cls.mapper['record-event'](e.handle, stream)
-    
+
     @classmethod
     def _get_num_devices(cls, platform):
         ngpus = Symbol(name='_num_gpus')
@@ -501,7 +502,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
     def _make_parallel(self, iet):
         mapper = {}
         kernels = []
-        
+
         # Name kernels according to the name of the EntryFunction by default so that
         # profiling multiple operators in a single Nsight run produces more
         # meaningful summary data
@@ -526,7 +527,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
                 kernels.extend(kernels_gen)
 
 
-        iet = Transformer(mapper).visit(iet)        
+        iet = Transformer(mapper).visit(iet)
         attrs = {'efuncs': kernels, 'includes': self.lang['headers'], 'globals': self.lang['global-decls']}
 
         return iet, attrs
@@ -651,6 +652,7 @@ class DeviceCudaDataManager(DataManager):
         """
         super().__init__(sregistry)
         self.gpu_fit = options['gpu-fit']
+        self.gpu_nofit = options['gpu-nofit']
 
     def _alloc_local_array_on_high_bw_mem(self, site, obj, storage, devicerm=None):
         """
@@ -901,10 +903,11 @@ class DeviceCudaDataManager(DataManager):
 
     @iet_pass
     def place_cuda_casts(self, iet, **kwargs):
-        # Don't generate unnecessary casts in the entry function and in CUDA kernels
-        if not isinstance(iet, CudaCallable) and not isinstance(iet, EntryFunction):
+        # Don't generate unnecessary casts in CUDA kernels
+        if not isinstance(iet, CudaCallable):
+            cuda_filter = lambda n: isinstance(n, CudaCall) or isinstance(n, CudaDealloc) or isinstance(n, PragmaTransfer) or isinstance(n, CudaHostFuncCall) or isinstance(n, CudaTransfer)
             # Candidates
-            indexeds = FindSymbols('indexeds|indexedbases').visit(iet)
+            indexeds = FindSymbols('indexeds|indexedbases', stop_filter=cuda_filter).visit(iet)
 
             # Create Function -> n-dimensional array casts
             # E.g. `float (*u)[.] = (float (*)[.]) u_vec->data`
@@ -912,10 +915,12 @@ class DeviceCudaDataManager(DataManager):
             # defined inside the kernel, which happens, for example, when:
             # (i) Dereferencing a PointerArray, e.g., `float (*r0)[.] = (float(*)[.]) pr0[.]`
             # (ii) Declaring a raw pointer, e.g., `float * r0 = NULL; *malloc(&(r0), ...)
-            defines = set(FindSymbols('defines').visit(iet))
+            # we use iet.body here because we manually futz with the defines for some nodes to
+            # coerce Devito into outputting function signatures the way we want them
+            defines = set(FindSymbols('defines', stop_filter=cuda_filter).visit(iet.body))
             bases = sorted({i.base for i in indexeds}, key=lambda i: i.name)
             casts = [self.lang.PointerCast(i.function, obj=i) for i in bases
-                    if i not in defines]
+                    if i.function not in defines]
 
             # Incorporate the newly created casts
             if casts:

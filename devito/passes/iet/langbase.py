@@ -336,12 +336,12 @@ class DeviceAwareMixin(object):
         True if the IET computation is offloadable to device, False otherwise.
         """
         expressions = FindNodes(Expression).visit(iet)
-        if any(not is_on_device(e.write, self.gpu_fit) for e in expressions):
+        if any(not is_on_device(e.write, self.gpu_fit, self.gpu_nofit) for e in expressions):
             return False
 
         functions = FindSymbols().visit(iet)
         buffers = [f for f in functions if f.is_Array and f._mem_mapped]
-        hostfuncs = [f for f in functions if not is_on_device(f, self.gpu_fit)]
+        hostfuncs = [f for f in functions if not is_on_device(f, self.gpu_fit, self.gpu_nofit)]
         return not (buffers and hostfuncs)
 
 
