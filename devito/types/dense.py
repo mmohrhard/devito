@@ -27,6 +27,8 @@ from devito.types.caching import CacheManager
 from devito.types.basic import AbstractFunction, Size
 from devito.types.utils import Buffer, DimensionTuple, NODE, CELL
 
+import nvtx
+
 __all__ = ['Function', 'TimeFunction', 'SubFunction', 'TempFunction']
 
 
@@ -124,37 +126,42 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     def _allocate_memory(func):
         """Allocate memory as a Data."""
         @wraps(func)
-        def wrapper(self):
-            if self._data is None:
+                with nvtx.annotate(f"allocating {self.name}"):
+                    debug("Allocating host memory for %s%s [%s]"
+                        % (self.name, self.shape_allocated, humanbytes(self.nbytes)))
                 debug("Allocating host memory for %s%s [%s]"
-                      % (self.name, self.shape_allocated, humanbytes(self.nbytes)))
-
-                # Allocate the actual data object
-                self._data = self._DataType(self.shape_allocated, self.dtype,
-                                            modulo=self._mask_modulo,
+                    with nvtx.annotate("host"):
+                        # Allocate the actual data object
+                        self._data = self._DataType(self.shape_allocated, self.dtype,
+                                                    modulo=self._mask_modulo,
+                                                    allocator=self._allocator,
+                                                    distributor=self._distributor)
                                             allocator=self._allocator,
-                                            distributor=self._distributor)
-
-                if self._device_allocator:
-                    debug("Allocating device memory for %s%s [%s]" % (self.name, self.shape_allocated, humanbytes(self.nbytes)))
-                    self._device_data, self._device_data_alloc_args = self._device_allocator.alloc(self.shape_allocated, self.dtype)
-                    self._device_data_ptr = self._device_data.ctypes.data_as(c_restrict_void_p)
-                    debug("Memory is 0x%lx bytes at 0x%lx on the host, and 0x%lx on the device" % (self.nbytes, self._data.ctypes.data_as(c_restrict_void_p).value, self._device_data_ptr.value or 0))
-                    
-                # Initialize data
-                if self._first_touch:
-                    assign(self, 0)
-                if callable(self._initializer):
+                    if self._device_allocator:
+                        with nvtx.annotate("device"):
+                            debug("Allocating device memory for %s%s [%s]" % (self.name, self.shape_allocated, humanbytes(self.nbytes)))
+                            self._device_data, self._device_data_alloc_args = self._device_allocator.alloc(self.shape_allocated, self.dtype)
+                            self._device_data_ptr = self._device_data.ctypes.data_as(c_restrict_void_p)
+                            debug("Memory is 0x%lx bytes at 0x%lx on the host, and 0x%lx on the device" % (self.nbytes, self._data.ctypes.data_as(c_restrict_void_p).value, self._device_data_ptr.value or 0))
+                        
+                    # Initialize data
                     if self._first_touch:
-                        warning("`first touch` together with `initializer` causing "
-                                "redundant data initialization")
-                    try:
-                        self._initializer(self.data_with_halo)
-                    except ValueError:
-                        # Perhaps user only wants to initialise the physical domain
-                        self._initializer(self.data)
+                        assign(self, 0)
+                    if callable(self._initializer):
+                        if self._first_touch:
+                            warning("`first touch` together with `initializer` causing "
+                                    "redundant data initialization")
+                        with nvtx.annotate("initializer"):
+                            try:
+                                self._initializer(self.data_with_halo)
+                            except ValueError:
+                                # Perhaps user only wants to initialise the physical domain
+                                self._initializer(self.data)
+                    else:
+                        with nvtx.annotate("zeroing"):
+                            self.data_with_halo.fill(0)
                 else:
-                    self.data_with_halo.fill(0)
+                    debug("initialized")
 
                 debug("initialized")
 
@@ -493,12 +500,13 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         self._ensure_host_update()
 
         if not self._is_halo_dirty:
-            info("marking %s dirty", str(self))
-            from traceback import extract_stack
-            self._dirty_stack = [
-                f"{fs.filename}:{fs.name}:{fs.lineno}"
-                for fs in extract_stack()[-2::-1]
-            ]
+            debug("marking %s dirty", str(self))
+            #from traceback import extract_stack
+            #self._dirty_stack = [
+            #    f"{fs.filename}:{fs.name}:{fs.lineno}"
+            #    for fs in extract_stack()[-2::-1]
+            #]
+            
         self._is_halo_dirty = True
         self._device_dirty = True
 
@@ -582,8 +590,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
 
         Typically, this accessor won't be used in user code to set or read data
         values. Instead, it may come in handy for testing or debugging
+        self._halo_exchange()
         """
-        self._mark_halo_dirty()
         self._halo_exchange()
         self._data.setflags(write=True)
         return np.asarray(self._data)
@@ -1012,28 +1020,10 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
             if self._device_data is None or self._device_data.shape != args[key.name].shape:
                 self._device_data = None
                 (self._device_data, self._device_data_alloc_args) = self._device_allocator.alloc(args[key.name].shape, self.dtype)
+        else:
+            self._device_data = None
 
-        v = {key.name: self._C_make_dataobj(args[key.name], self._device_data)}
-
-        addr = v[key.name]._obj.data.value
-        addr_4koff = addr % 4096
-        addr_64 = (addr - (addr % 64))
-        addr_l1 = (addr_64 >> 7) % int(32768 / 64)
-        import os
-        if os.environ.get("DEVITO_VERBOSE_MEMORY_ALLOCATIONS", "0") == "1":
-            if self._device_data is not None: 
-                info("%s: device data is at %lx", key.name, self._device_data.ctypes.data_as(c_restrict_void_p).value)
-            info("%s %s: host %lx device %lx, 4k offset %lx, L1 cacheline est. %lx, data shape: %s, device data shape: %s", 
-                key.name, 
-                "(aliased)" if alias is not None else "", 
-                v[key.name]._obj.data.value, 
-                v[key.name]._obj.device_data.value or 0, 
-                addr_4koff, 
-                addr_l1,
-                str(args[key.name].shape),
-                str(self._device_data.shape) if self._device_data is not None else "none")
-        return v
-
+        return {key.name: self._C_make_dataobj(args[key.name], self._device_data)}
 
 class Function(DiscreteFunction):
 

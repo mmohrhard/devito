@@ -10,8 +10,8 @@ from devito.core.power import PowerAdvCOperator, PowerAdvOmpOperator
 from devito.core.gpu import (DeviceNoopOmpOperator, DeviceNoopAccOperator,
                              DeviceAdvOmpOperator, DeviceAdvAccOperator,
                              DeviceFsgOmpOperator, DeviceFsgAccOperator,
-                             DeviceCustomOmpOperator, DeviceCustomAccOperator,
-                             DeviceCustomCudaOperator, DeviceNoopCudaOperator,
+                             DeviceCustomOmpOperator, DeviceCustomAccOperator)
+from devito.core.cuda import (DeviceCustomCudaOperator, DeviceNoopCudaOperator,
                              DeviceAdvCudaOperator, DeviceFsgCudaOperator)
 from devito.operator.registry import operator_registry
 

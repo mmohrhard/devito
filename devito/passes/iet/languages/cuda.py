@@ -1,9 +1,9 @@
 from collections import OrderedDict
-from ctypes import POINTER
+from ctypes import POINTER, c_void_p
 from enum import Enum
 from functools import cached_property, singledispatch
 import cgen as c
-from sympy import Or
+from sympy import Or, simplify, Number
 from devito.ir.iet.visitors import Visitor
 
 from devito.symbolics.extended_sympy import FieldFromComposite, Null, ReservedWord
@@ -11,7 +11,7 @@ from devito.types.misc import Global, Pointer
 from devito.tools.data_structures import Bunch, DefaultOrderedDict
 from devito.ir.support.syncs import FetchUpdate, PrefetchUpdate, ReleaseLock, WaitLock, WithLock
 from devito.ir.iet.efunc import AsyncCall, AsyncCallable, ThreadCallable
-from devito.ir.iet.cuda import CudaTransferDirection
+from devito.ir.iet.cuda import CudaTransferDirection, TemplateParameter
 from devito.passes.iet.definitions import DeviceAwareDataManager, Storage
 from devito.passes.iet.langbase import make_sections_from_imask
 from devito.symbolics.printer import ccode
@@ -22,10 +22,11 @@ import numpy as np
 from sympy import Max
 from devito.logger import info, warning, debug
 from devito.arch import CUDA, NVIDIAX
-from devito.ir import (Call, Callable, CudaCall, DeviceCall, DummyExpr, DPtr, EntryFunction, List, CudaCallable,
+from devito.ir import (Call, Callable, CudaCall, CudaCallableBody, DeviceCall, DummyExpr, DPtr, EntryFunction, List, CudaCallable,
                        Block, ParallelIteration, ParallelTree, Pragma, Definition, Iteration, Node,
                        FindNodes, FindSymbols, Uxreplace, Transformer, Lambda, AddressOf, CLiteral,
-                       MapExprStmts, DeviceFunction, make_callable, Expression, OpInc)
+                       MapExprStmts, DeviceFunction, make_callable, Expression, OpInc, CudaKernelPointerCast,
+                       )
 from devito.passes.iet.engine import iet_pass, iet_visit
 from devito.passes.iet.definitions import DataManager
 from devito.passes.iet.orchestration import Orchestrator
@@ -39,10 +40,10 @@ from devito.passes.iet.languages.openmp import OmpRegion, OmpIteration
 from devito.passes.iet.languages.utils import make_clause_reduction
 from devito.passes.iet.misc import is_on_device
 from devito.ir.iet.utils import derive_parameters, retrieve_iteration_tree, filter_iterations
-from devito.symbolics import Macro, cast_mapper
-
+from devito.symbolics import Macro, cast_mapper, uxreplace
+from devito.symbolics import pow_to_mul
 from devito.tools import filter_ordered
-from devito.types import DevicePointer, Symbol, Constant, DeviceRM, DeviceCreate, UpdateDevice, UpdateHost
+from devito.types import DevicePointer, Symbol, Constant, DeviceRM, DeviceCreate, UpdateDevice, UpdateHost, Eq
 from devito.types.basic import IndexedBase
 from devito.types.dense import AliasFunction
 
@@ -168,6 +169,10 @@ class CudaStorage:
         return self._imask
 
     @cached_property
+    def name(self):
+        return self.function._C_name
+    
+    @cached_property
     def sections(self):
         return make_sections_from_imask(self.function, self.imask)
 
@@ -205,7 +210,7 @@ class CudaTransfer(CudaStorage, Transfer, Node):
     @property
     def stream(self):
         return self._stream
-
+    
     @cached_property
     def expr_symbols(self):
         retval = [self.function.indexed]
@@ -271,12 +276,38 @@ class NullPointer(ReservedWord):
     def __new__(cls, *args, **kwargs):
         return super().__new__(cls, "nullptr")
 
+class JitifyCache(Global):
+    @property
+    def _C_typename(self):
+        return "jitify::JitCache"    
+    def __init__(cls, name, *args, **kwargs):
+        super().__init__(name, dtype=c_void_p)
+
+    def __new__(cls, *args):
+        return super().__new__(cls, "kernel_cache")
+
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls, "kernel_cache")
+    
+class JitifyProgram(Global):
+    @property
+    def _C_typename(self):
+        return "jitify::Program"    
+    def __init__(cls, name, *args, **kwargs):
+        super().__init__(name, dtype=c_void_p)
+
+    def __new__(cls, name, *args):
+        return super().__new__(cls, name)
+
+    def __new__(cls, name, *args, **kwargs):
+        return super().__new__(cls, name)
+    
 class CudaBB(PragmaLangBB):
 
     mapper = {
         # Misc
         'name': 'CUDA',
-        'headers': ['cuda.h', 'cuda_runtime_api.h', 'nvtx3/nvToolsExt.h', 'stdio.h', 'assert.h', 'devito/devito_cuda.cuh', 'nccl.h'],
+        'headers': ['cuda.h', 'cuda_runtime_api.h', 'nvtx3/nvToolsExt.h', 'stdio.h', 'assert.h', 'devito/devito_cuda.cuh', 'nccl.h', 'devito/jitify.hpp'],
         'global-decls': [
             Definition(HostStream(), initvalue = "nullptr", prefix="static"),
             Definition(MemCopyStream(), initvalue = "nullptr", prefix="static"),
@@ -295,6 +326,8 @@ class CudaBB(PragmaLangBB):
                        Conditional(CondEq(KernelStream(), NullPointer()), Call("cudaStreamCreateWithFlags", (Byref(KernelStream()), "cudaStreamNonBlocking"))),
                        Conditional(CondEq(NcclStream(), NullPointer()), Call("cudaStreamCreateWithFlags", (Byref(NcclStream()), "cudaStreamNonBlocking"))),
 
+                       Definition(JitifyCache("kernel_cache"), prefix="static"),
+                       Definition(JitifyProgram("program"), initvalue=Call("kernel_cache.program", ("_cudaKernels", 0))),
                        Call("nvtxRangePush", ("__FUNCTION__", )),
             ]),
         'fini': lambda args:
@@ -403,6 +436,10 @@ class CudaBB(PragmaLangBB):
         return CudaDealloc(f, imask, devicerm)
 
     @classmethod
+    def _map_release(cls, f, imask=None, devicerm=None):
+        return CudaDealloc(f, imask, devicerm)
+    
+    @classmethod
     def _map_update_host_async(cls, f, imask=None, qid=None, condition=None):
         return CudaTransfer(f, imask, condition, CudaTransferDirection.D2H, stream=qid)
 
@@ -483,7 +520,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             # the grid/threads are (for now) set up in some C++ code from a header
             kthread = [1] * len(kdims)
 
-            partree = CudaCall(kernel_name, kgrid, kthread, kernel.parameters, stream=KernelStream())
+            partree = CudaCall(kernel_name, kgrid, kthread, preferred_block=kernel.preferred_block, preferred_sub_block=kernel.preferred_sub_block, arguments=kernel.parameters, kernel=kernel, stream=KernelStream())
             # Make sure that the enclosing function knows we need the full size of the Functions
             partree.expr_symbols = as_tuple(flatten((partree.expr_symbols, kdims)))
 
@@ -540,6 +577,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             return super()._make_nested_partree(partree)
 
     def _make_cuda_kernel(self, name, body):
+        body = realign_iet(body)
         # Find the iterators we consider eligible for being the GPU grid dimensions
         iterations = list([i for i in FindNodes(Iteration).visit(body) if i.is_ParallelRelaxed])
         possible_iter_dimensions = list(OrderedDict.fromkeys([x.dim for x in iterations if not x.dim.name.startswith("par_dim")]))
@@ -560,26 +598,67 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
         iet = Transformer(mapper).visit(iet)
 
         # Now, generate the iteration dimension variables from the blockIdx/threadIdx
+        # These end up reversed because warp thread order in CUDA for >1D is column-major
+        # and we want contiguous memory access
         dim_vars = ["x", "y", "z"]
+
         kernel = []
         args = set()
+
+        sub_blocks = [2] * (len(valid_dims) - 1)
+
+        sub_iters = []
+        setup_iter = []
+
+        loop_end = []
+        iter_filter = []
+
         for v in range(0, len(valid_dims)):
             dim, iters = valid_dims[v]
             limits = iters[0].limits
             symbols = flatten([i.expr_symbols for i in iters])
 
-            kernel.append(c.Initializer(c.Value('int', dim.name), "%s + blockDim.%s * blockIdx.%s + threadIdx.%s" % (limits[0], dim_vars[v], dim_vars[v], dim_vars[v])))
+            has_sub_block = v < len(valid_dims) - 1
+
+            l_idx = "((threadIdx.x %s) %% _block_%s)" % ("" if v == len(valid_dims) - 1 else ("/ (%s)" % ' * '.join("_block_%s" % x for x in dim_vars[v+1:len(valid_dims)])), dim_vars[v])
+            kernel.append(c.Initializer(c.Value('int', dim.name + ("_0" if has_sub_block else "")), "blockIdx.%s * _block_%s %s+ %s" % (dim_vars[v], dim_vars[v], "* _sub_block_" + dim_vars[v] + " " if has_sub_block else "", l_idx)))          
             args = args.union(symbols)
 
+            if has_sub_block:
+                sub_var = "_sub_block_%s" % dim_vars[v]
+                sub_iterator = "_" + dim_vars[v] + dim_vars[v]
+                setup_iter.append(c.Initializer(c.Value("int", dim.name), "%s + %s" % (dim.name + "_0", sub_iterator)))
+
             # Add the iteration conditions
-            kernel.append(c.If("%s > %s" % (dim.name, str(limits[1])), c.Statement("return")))
+            iter_filter.append(c.If("%s < %s || %s > %s" % (dim.name, str(limits[0]), dim.name, str(limits[1])), c.Statement("continue") if v < len(valid_dims) - 1 else c.Statement("return")))
+
+        body = setup_iter + iter_filter + [iet]
+
+        for v in reversed(range(0, len(sub_blocks))):
+            dim, iters = valid_dims[v]
+
+            sub_var = "_sub_block_%s" % dim_vars[v]
+            sub_iterator = "_" + dim_vars[v] + dim_vars[v]
+            body = [c.Line("#pragma unroll"), c.Line("for (int %s = 0; %s < %s; %s++) {" % (sub_iterator, sub_iterator, sub_var, sub_iterator))] + body + [c.Line("}")]
+
+        # todo: figure out something better based on looking at access for spatial reuse
+        block = [1] * len(valid_dims)
+        block[-1] = 32 # always want at least one warp worth, and preferably a multiple of warps
+        if len(block) == 3:
+            block[0] = 4
+            block[1] = 4
+        elif len(block) == 2:
+            block[0] = 16
+        else:
+            block[0] = 128
+
 
         # Add the iteration body
-        kernel.extend(as_tuple(iet))
+        kernel.extend(as_tuple(body))
 
-        # Remove the original iteration variables from the signature
-
-        cuda_callable = CudaCallable(name=name, body=kernel, parameters=args, defines=[x[0] for x in valid_dims])
+        # 'preferred' block is so named because we have no idea until at runtime how many
+        # registers the CUDA compiler will use and thus the range of valid block sizes
+        cuda_callable = CudaCallable(name=name, body=kernel, parameters=args, defines=[x[0] for x in valid_dims], preferred_block=block, preferred_sub_block=sub_blocks)
 
         return (cuda_callable, list([x[1][0] for x in valid_dims]))
 
@@ -604,6 +683,51 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
         partree = Transformer(mapper).visit(partree)
 
         return partree
+
+def tuple_to_dim3(grid):
+    return "dim3(%s)" % ', '.join(str(x) if '/' not in str(x) else ("max(1, %s)" % str(x)) for x in grid )
+
+@iet_pass
+def kernel_tuning(iet):
+    if not isinstance(iet, EntryFunction):
+        return iet, {}
+    kernel_calls = FindNodes(CudaCall).visit(iet.body)
+
+    grouped = {n : list(set([c for c in kernel_calls if c.name == n])) for n in set([x.name for x in kernel_calls]) }
+    unique = []
+    non_unique = []
+    for k, v in grouped.items():
+        if len(v) == 1 or len(set([x.template_arguments for x in v])) == 1:
+            unique += v
+        else:
+            non_unique += v
+    tunes = []
+    unique = sorted(unique, key=lambda x: x.name)
+    non_unique = sorted(non_unique, key=lambda x: x.name)
+
+    for call in unique:
+        if call.preferred_block is None:
+            continue
+        setup_lambda = "[&](dim3 block, dim3 sub_block) {\n"
+        suffix = ['.x', '.y', '.z']
+        block_parameters = ['block' + suffix[i] for i in range(len(call.preferred_block))]
+        subblock_parameters = ['sub_block' + suffix[i] for i in range(len(call.preferred_sub_block) if call.preferred_sub_block is not None else 0)]
+        setup_lambda += 'return program.kernel("%s").instantiate(%s); }' % (call.name, ','.join(block_parameters + subblock_parameters + [ccode(x.rhs) for x in call.template_arguments]))
+        preferred_sub_block = call.preferred_sub_block or []
+        tunes.append(c.Line("""auto %s_tune = performTuning(_kernelTuning, "%s", %s, %s, %s, %d, %s);""" % (call.name, call.name, 
+                                                                                                        tuple_to_dim3(call.preferred_block),
+                                                                                                        tuple_to_dim3(preferred_sub_block),
+                                                                                                        tuple_to_dim3(call.grid),
+                                                                                                        len(call.preferred_block),
+                                                                                                        setup_lambda))
+                    )
+    
+    for call in non_unique:
+        preferred_sub_block = call.preferred_sub_block or []
+        tunes.append(c.Line("""auto %s_tune = std::make_pair(dim3(%s), dim3(%s))));""" % (call.name, 
+                                                                                          ','.join([str(x) for x in call.preferred_block]),
+                                                                                          ','.join([str(x) for x in preferred_sub_block]))))
+    return iet._rebuild(body=iet.body._rebuild(body=flatten(tunes+[iet.body.body]))), {}
 
 class IterationExtractor(Visitor):
     def __init__(self, dims):
@@ -630,7 +754,6 @@ class IterationExtractor(Visitor):
     def visit_Node(self, o, **kwargs):
         children = [self._visit(i, **kwargs) for i in o.children]
         return o._rebuild(*children, **o.args_frozen)
-
 
 class DeviceCudaDataManager(DataManager):
 
@@ -666,7 +789,7 @@ class DeviceCudaDataManager(DataManager):
         nbytes = SizeOf(obj._C_typedata)*obj.size
         init = doalloc(nbytes, None, retobj=obj._C_symbol)
         #allocs = (decl, Conditional(CondEq(obj._C_symbol, NullPointer()), init))
-        allocs = (decl, Call("PER_DEVICE_TEMP_GET", (ReservedWord(str(obj._C_typedata)), obj._C_symbol, nbytes)))
+        allocs = (Call("PER_DEVICE_TEMP_GET", (ReservedWord(str(obj._C_typedata)), obj._C_symbol, nbytes)))
 
         #free = dofree(obj._C_name, None)
         free = Call("PER_DEVICE_TEMP_DESTROY", (obj._C_name,))
@@ -901,11 +1024,43 @@ class DeviceCudaDataManager(DataManager):
 
         return _place_transfers(iet, mapper=kwargs['mapper'])
 
-    @iet_pass
-    def place_cuda_casts(self, iet, **kwargs):
+    @iet_visit
+    def derive_cuda_casts(self, iet, **kwargs):
         # Don't generate unnecessary casts in CUDA kernels
+        kernels = FindNodes(CudaCallable).visit(iet)
+        calls = FindNodes(CudaCall).visit(iet)
+        mapper = {}
+        
+        for kernel in kernels:
+            indexeds = FindSymbols('indexeds|indexedbases').visit(kernel)
+            defines = set(FindSymbols('defines').visit(kernel)) - set(kernel.parameters)
+            bases = sorted({i.base for i in indexeds}, key=lambda i: i.name)
+            casts = [CudaKernelPointerCast(i.function, obj=i) for i in bases
+                    if i.function not in defines]
+
+            # Incorporate the newly created casts
+            if casts:
+                mapper[kernel] = kernel._rebuild(body=kernel.body._rebuild(casts=casts))
+                
+        return mapper
+    
+    @iet_visit
+    def derive_cuda_kernel_call_parameters(self, iet, mapper: dict):
+        calls = FindNodes(CudaCall).visit(iet)
+        cmapper = {}
+        for kernel, replacement in mapper.items():
+            
+            template_args = replacement.template_arguments
+            our_calls = [c for c in calls if c.name == kernel.name]
+            for c in our_calls:
+                cmapper[c] = c._rebuild(template_arguments=template_args)
+
+        return {**mapper, **cmapper}
+
+    @iet_pass
+    def place_cuda_non_kernel_casts(self, iet, **kwargs):
         if not isinstance(iet, CudaCallable):
-            cuda_filter = lambda n: isinstance(n, CudaCall) or isinstance(n, CudaDealloc) or isinstance(n, PragmaTransfer) or isinstance(n, CudaHostFuncCall) or isinstance(n, CudaTransfer)
+            cuda_filter = lambda n: isinstance(n, CudaCall) or isinstance(n, CudaCallable) or isinstance(n, CudaDealloc) or isinstance(n, PragmaTransfer) or isinstance(n, CudaHostFuncCall) or isinstance(n, CudaTransfer)
             # Candidates
             indexeds = FindSymbols('indexeds|indexedbases', stop_filter=cuda_filter).visit(iet)
 
@@ -927,7 +1082,7 @@ class DeviceCudaDataManager(DataManager):
                 iet = iet._rebuild(body=iet.body._rebuild(casts=casts))
 
         return iet, {}
-
+    
     @iet_pass
     def tidy_up(self, iet, **kwargs):
         class Tidier(Visitor):
@@ -949,6 +1104,10 @@ class DeviceCudaDataManager(DataManager):
 
         return iet, {}#Tidier().visit(iet), {}
 
+    @iet_pass
+    def place_cuda_casts(self, iet, **kwargs):
+        return Transformer(kwargs['mapper']).visit(iet), {}
+    
     def process(self, graph):
         """
         Apply the `place_transfers`, `place_definitions` and `place_casts` passes.
@@ -956,9 +1115,109 @@ class DeviceCudaDataManager(DataManager):
         mapper = self.derive_transfers(graph)
         self.place_transfers(graph, mapper=mapper)
         self.place_definitions(graph)
-        self.place_cuda_casts(graph)
+        cast_mapper = self.derive_cuda_casts(graph)
+        cast_mapper = flatten_dict(cast_mapper, prefix=None)
+        cast_mapper = flatten_dict(self.derive_cuda_kernel_call_parameters(graph, mapper=cast_mapper), prefix=None)
+        self.place_cuda_casts(graph, mapper=cast_mapper)
+        self.place_cuda_non_kernel_casts(graph)
+        kernel_tuning(graph)
+        
         self.tidy_up(graph)
 
+def realign_iet(iet):
+    """
+    Attempt to realign the final iteration dimensions in an IET to better suit the GPU's cachelines.
+
+    eg. 
+    for (xi = x_m; xi < x_M; xi++)
+    for (yi = y_m; yi < y_M; yi++)
+        d[xi + 8][yi + 7] = sqrt(d[xi + 8][yi + 6])
+        d2[xi + 8][yi + 7] = sqrt(d2[xi + 8][yi + 7])
+
+    becomes
+
+    for (xi = x_m + 8; xi < x_M + 8; xi++)
+    for (yi = y_m + 7; yi < y_M + 7; yi++)
+        d[xi + 8][yi] = sqrt(d[xi + 8][yi - 1])
+        d2[xi + 8][yi] = sqrt(d2[xi + 8][yi])
+
+    This way, the CUDA threads in each warp are reading and writing a centre point that is
+    aligned with the 256-byte aligned grid. Granted, they'll usually also be reading misaligned
+    points along the most frequently-changing axis in realistic workloads, 
+    """
+
+    # Find the functions we're writing to
+    exs = FindNodes(Expression).visit(iet)
+    exprs = [x for x in exs if x.output.is_Indexed]
+
+    # Find all the dimensions they write to
+    all_dims = set(flatten([expr.expr.lhs.function.dimensions[-1] for expr in exs if len(expr.expr.lhs.function.dimensions) > 0]))
+    index_dims = set(flatten([[d for d in expr.expr.dimensions] for expr in exs]))
+    index_map = {d.root : d for d in index_dims}
+    # and reference those to the indexed dimensions
+    used_index_map = {d: list(set(flatten([expr.expr.lhs.indices[d] for expr in exprs if d in expr.expr.lhs.indices._getters]))) for d in index_map.keys()}
+
+    # for now, give up early if anything has multiple used indices
+    if any([len(x) > 1 for x in used_index_map.values()]):
+        return iet
+
+    offset_map = {d: (-uxreplace(used_index_map[d][0], {index_map[d]: Number(0) })) for d in all_dims if d in used_index_map and len(used_index_map[d]) > 0}
+    ioffset_map = {index_map[d]: offset_map[d] for d in offset_map }
+
+    # Rebuild the expressions, and include the numeric offsets into the iterations
+    # The simplify() calls are just to make the generated code a little more readable.
+    # May want to remove them if they're taking an undue amount of time to process 
+    # (or find a way of having it just simplify the surrounding terms?)
+
+    return IterationLimitTranslator(ioffset_map).visit(iet)
+
+class IterationLimitTranslator(Visitor):
+    def __init__(self, dim_mapper):
+        super(Visitor, self).__init__()
+        self._dim_mapper = dim_mapper
+        self._expr_map = { k: k + v for k, v in dim_mapper.items() }
+
+    def visit_object(self, o, **kwargs):
+        return o
+
+    def visit_tuple(self, o, **kwargs):
+        visited = tuple(self._visit(i, **kwargs) for i in o)
+        return tuple(i for i in visited if i is not None)
+
+    visit_list = visit_tuple
+
+    def visit_Iteration(self, o, **kwargs):
+        if o.dim in self._dim_mapper:
+            return o._rebuild(limits=(o.limits[0] - self._dim_mapper[o.dim],
+                                      o.limits[1] - self._dim_mapper[o.dim],
+                                      1),
+                              nodes=self._visit(o.nodes, **kwargs))
+
+        else:
+            children = [self._visit(i, **kwargs) for i in o.children]
+            return o._rebuild(*children, **o.args_frozen)
+
+    def visit_Expression(self, o, **kwargs):
+        return o._rebuild(expr=o.expr.func(
+            simplify(uxreplace(o.expr.lhs, self._expr_map)), 
+            pow_to_mul(simplify(uxreplace(o.expr.rhs, self._expr_map))),
+            ispace=o.expr.ispace.translate(self._dim_mapper))
+        )
+        
+    def visit_Node(self, o, **kwargs):
+        children = [self._visit(i, **kwargs) for i in o.children]
+        return o._rebuild(*children, **o.args_frozen)
+
+def flatten_dict(dd, separator='_', prefix=''):
+    return { k : v
+             for kk, vv in dd.items()
+             for k, v in flatten_dict(vv, separator, kk).items()
+             } if isinstance(dd, dict) else { prefix : dd }
+
+@iet_pass
+def preload_kernels(iet):
+    calls = FindNodes(CudaCall).visit(iet)
+    unique_kernels = set([(c.name, c.template_arguments) for c in calls])
 
 class CudaHostFuncCall(AsyncCall):
     def __init__(self, name, arguments=None, retobj=None, is_indirect=False,
@@ -1078,7 +1337,6 @@ class CudaOrchestrator(Orchestrator):
             replace_ops = []
             for s in n.sync_ops:
                 if s.handle:
-                    info(f"replacing {s.handle} in {s} with a CUDA event")
                     s.handle = CudaEvent(s.handle.name)
                 replace_ops.append(s)
 
@@ -1124,7 +1382,6 @@ class CudaOrchestrator(Orchestrator):
 
         events = [List(body=[Definition(e, None, None, NullPointer()),
                              self.lang.mapper['create-event'](e._C_symbol),
-                            # self.lang.mapper['record-event'](e._C_symbol, KernelStream()._C_symbol)
                              ]) for e in filter_ordered(events)]
         iet = iet._rebuild(body = List(body=[events, iet.body, CudaChecked(Call("cudaDeviceSynchronize", None))]))
 

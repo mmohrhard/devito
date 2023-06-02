@@ -88,6 +88,21 @@ class CodeSymbol(object):
         return ctypes_to_cstr(_type, qualifiers=self._C_typequals)
 
     @property
+    def _C_basetypedata(self):
+        """
+        The type of the object in the generated code, without qualifiers.
+
+        Returns
+        -------
+        str
+        """
+        _type = self._C_ctype
+        while issubclass(_type, _Pointer):
+            _type = _type._type_
+
+        return ctypes_to_cstr(_type)
+
+    @property
     def _C_typename(self):
         """
         The type used to carry around the object in the generated code.

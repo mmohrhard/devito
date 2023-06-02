@@ -189,43 +189,7 @@ class CGen(Visitor):
                 ret.append(c.Value('void', '*_%s' % i._C_name))
         return ret
 
-    def _args_cuda_decl(self, callable, args):
-        """Generate cgen CUDA declarations from an iterable of symbols and expressions."""
-        ret = []
-        for i in filter_sorted(args):
-            if isinstance(i, AbstractFunction):
-                ret.append(c.Value('%s%s __restrict' % ("const " if i not in callable.writes else "", i.indexed._C_typename), i._name))
-            elif isinstance(i, IndexedData):
-                ret.append(c.Value('%s%s __restrict' % ("const " if i not in callable.writes else "", i._C_typename), i._name))
-            elif i.is_AbstractObject or i.is_Symbol:
-                ret.append(c.Value(i._C_typename, i._C_name))
-            else:
-                ret.append(c.Value('void', '*_%s' % i._C_name))
-        return ret
 
-    def _args_cuda_call(self, call, args):
-        """
-        Generate cgen function call arguments from an iterable of symbols and expressions.
-        """
-        ret = []
-        for i in filter_sorted(args):
-            try:
-                if isinstance(i, AbstractFunction):
-                    if hasattr(i, "_C_field_data"):
-                        ret.append("(%s)%s->%s" % (i.indexed._C_typename, i._C_name, i._C_field_device_data))
-                    else:
-                        ret.append("(%s)%s" % (i.indexed._C_typename, i._C_name))
-                elif isinstance(i, Call):
-                    ret.append(self._visit(i, nested_call=True))
-                elif isinstance(i, Lambda):
-                    ret.append(self._visit(i))
-                elif isinstance(i, AddressOf):
-                    ret.append('&%s' % (i.child._C_name))
-                else:
-                    ret.append(i._C_name)
-            except AttributeError:
-                ret.append(ccode(i))
-        return ret
 
     def _args_call(self, args):
         """
@@ -606,12 +570,6 @@ class CGen(Visitor):
         signature = c.FunctionDeclaration(c.Value(prefix, o.name), decls)
         return c.FunctionBody(signature, c.Block(body))
 
-    def visit_CudaCallable(self, o):
-        body = flatten(self._visit(i) for i in o.children)
-        decls = self._args_cuda_decl(o, o.parameters)
-        prefix = ' '.join(o.prefix + (o.retval,))
-        signature = c.FunctionDeclaration(c.Value(prefix, o.name), decls)
-        return c.FunctionBody(signature, c.Block(body))
 
     def visit_CallableBody(self, o):
         body = []
@@ -675,11 +633,7 @@ class CGen(Visitor):
 
         # Elemental functions
         esigns = []
-        efuncs = [blankline]
-        for i in o._func_table.values():
-            if i.local:
-                prefix = ' '.join(i.root.prefix + (i.root.retval,))
-                if isinstance(i.root, CudaCallable):
+                esigns.append(c.FunctionDeclaration(c.Value(prefix, i.root.name),
                     esigns.append(c.FunctionDeclaration(c.Value(prefix, i.root.name),
                                                         self._args_cuda_decl(i.root, i.root.parameters)))
                 else:

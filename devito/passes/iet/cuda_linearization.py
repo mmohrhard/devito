@@ -5,13 +5,15 @@ from devito.ir.iet.cuda import CudaCallable
 
 from devito.data import FULL
 from devito.ir import (BlankLine, Call, DummyExpr, Dereference, List, PointerCast,
-                       Transfer, FindNodes, FindSymbols, Transformer, Uxreplace)
+                       Transfer, FindNodes, FindSymbols, Transformer, Uxreplace,
+                       Definition, Block, CudaConstantWrite, CudaConstantDecl)
 from devito.passes.iet.engine import iet_pass
 from devito.symbolics import DefFunction, MacroArgument, ccode
 from devito.tools import Bunch, DefaultOrderedDict, filter_ordered, flatten, prod
 from devito.types import Array, Symbol, FIndexed, Indexed, Wildcard
 from devito.types.basic import IndexedData
 from devito.types.dense import DiscreteFunction
+from devito.types.misc import Global
 from devito.logger import debug, info
 import cgen as c
 
@@ -57,10 +59,10 @@ def cuda_linearization(iet, **kwargs):
         # Default
         key = lambda f: (f.is_DiscreteFunction or f.is_Array) and f.ndim > 1
 
-    iet, headers = linearize_accesses(iet, key, track, sregistry)
+    iet, headers, _globals = linearize_accesses(iet, key, track, sregistry)
     iet = linearize_pointers(iet, key)
 
-    return iet, {'headers': headers}
+    return iet, {'headers': headers, 'globals': _globals}
 
 
 def linearize_accesses(iet, key, track, sregistry):
@@ -95,18 +97,22 @@ def linearize_accesses(iet, key, track, sregistry):
     # For all unseen Functions, build the size exprs. For example:
     # `x_fsz0 = u_vec->size[1]`
     imapper = DefaultOrderedDict(dict)
+    constant_definitions = []
     for (d, halo, padding, _, _, _), v in mapper.items():
-        expr = _generate_fsz(v[0], d, sregistry)
+        constant_def, stmt, expr = _generate_fsz(v[0], d, sregistry)
         if expr:
             for f in v:
-                imapper[f][d] = expr.write
-                track[f].stmts0.append(expr)
+                imapper[f][d] = expr
+                track[f].stmts0.append(stmt)
+                constant_definitions.append(constant_def)
 
                 # throw an assertion into the output so that the operator will crash
                 # if it was otherwise going to produce invalid results
                 if f != v[0] and isinstance(v[0], DiscreteFunction):
                     track[f].stmts0.append(c.Statement("assert(%s == %s)" % (f._C_get_field(FULL, d).size if isinstance(f, DiscreteFunction) else f.symbolic_shape[d],
                                                     v[0]._C_get_field(FULL, d).size if isinstance(v[0], DiscreteFunction) else v[0].symbolic_shape[d])))
+
+    _globals = []
 
     # For all unseen Functions, build the stride exprs. For example:
     # `y_stride0 = y_fsz0*z_fsz0`
@@ -120,9 +126,10 @@ def linearize_accesses(iet, key, track, sregistry):
                 stmt = built[expr]
             except KeyError:
                 name = sregistry.make_name(prefix='%s_%s_stride' % (f.name, d.name))
-                s = Symbol(name=name, dtype=np.int64, is_const=True)
-                stmt = built[expr] = DummyExpr(s, expr, init=True)
-            mapper[f][d] = stmt.write
+                s = Global(name=name, dtype=np.int64, is_const=True)
+                stmt = built[expr] = CudaConstantWrite(s, expr, init=True)
+                _globals.append(CudaConstantDecl(s, dtype=np.int64))
+            mapper[f][d] = stmt
             track[f].stmts1.append(stmt)
 
     # For all unseen Functions, build the access macros. For example:
@@ -132,6 +139,9 @@ def linearize_accesses(iet, key, track, sregistry):
         if track[f].cbk is None:
             header, track[f].cbk = _generate_macro(f, mapper[f], sregistry)
             headers.append(header)
+
+    for f in constant_definitions:
+        _globals.append(f)
 
     # Turn all Indexeds into "functional" Indexeds. For example:
     # `u[t2, x+8, y+9, z+7] => uL(t2, x+8, y+9, z+7)`
@@ -165,7 +175,7 @@ def linearize_accesses(iet, key, track, sregistry):
     else:
         assert len(stmts1) == 0
 
-    return iet, headers
+    return iet, headers, _globals
 
 
 @singledispatch
@@ -176,16 +186,17 @@ def _generate_fsz(f, d, sregistry):
 @_generate_fsz.register(DiscreteFunction)
 def _(f, d, sregistry):
     name = sregistry.make_name(prefix='%s_%s_fsz' % (f.name, d.name))
-    s = Symbol(name=name, dtype=np.int64, is_const=True)
-    return DummyExpr(s, f._C_get_field(FULL, d).size, init=True)
+    s = Global(name=name, dtype=np.int64, is_const=True)
+    expr = f._C_get_field(FULL, d).size
+    return (CudaConstantDecl(s, np.int64), CudaConstantWrite(s, expr), expr)
 
 
 @_generate_fsz.register(Array)
 def _(f, d, sregistry):
     name = sregistry.make_name(prefix='%s_%s_fsz' % (f.name, d.name))
-    s = Symbol(name=name, dtype=np.int64, is_const=True)
-    return DummyExpr(s, f.symbolic_shape[d], init=True)
-
+    s = Global(name=name, dtype=np.int64, is_const=True)
+    expr = f.symbolic_shape[d]
+    return (CudaConstantDecl(s, np.int64), CudaConstantWrite(s, expr), expr)
 
 @singledispatch
 def _generate_macro(f, szs, sregistry):
@@ -200,7 +211,7 @@ def _(f, szs, sregistry):
     pname = sregistry.make_name(prefix='%sL' % f.name)
     cbk = lambda i, pname=pname: FIndexed(i, pname, strides=tuple(szs.values()))
 
-    expr = sum([MacroArgument("_" + d0.name)*szs[d1]
+    expr = sum([MacroArgument("_" + d0.name)*szs[d1].lhs
                 for d0, d1 in zip(f.dimensions, f.dimensions[1:])])
     expr += MacroArgument("_" + f.dimensions[-1].name)
     expr = Indexed(IndexedData(f.name, None, f), expr)

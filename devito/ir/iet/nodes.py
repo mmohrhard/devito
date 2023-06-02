@@ -95,7 +95,10 @@ class Node(Signer):
               CGen().visit(self)
         """
         from devito.ir.iet.visitors import CGen
-        return CGen().visit(self)
+        if self._CodeGen:
+            return self._CodeGen().visit(self)
+        else:
+            return CGen().visit(self)
 
     @property
     def view(self):
