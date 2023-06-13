@@ -1,12 +1,12 @@
 from functools import singledispatch
 
 import numpy as np
-from devito.ir.iet.cuda import CudaCallable
+from devito.cuda.nodes import CudaCallable
 
 from devito.data import FULL
 from devito.ir import (BlankLine, Call, DummyExpr, Dereference, List, PointerCast,
                        Transfer, FindNodes, FindSymbols, Transformer, Uxreplace,
-                       Definition, Block, CudaConstantWrite, CudaConstantDecl)
+                       Definition, Block)
 from devito.passes.iet.engine import iet_pass
 from devito.symbolics import DefFunction, MacroArgument, ccode
 from devito.tools import Bunch, DefaultOrderedDict, filter_ordered, flatten, prod
@@ -15,6 +15,9 @@ from devito.types.basic import IndexedData
 from devito.types.dense import DiscreteFunction
 from devito.types.misc import Global
 from devito.logger import debug, info
+
+from devito.cuda.nodes import CudaConstantWrite, CudaConstantDecl
+
 import cgen as c
 
 __all__ = ['cuda_linearize']

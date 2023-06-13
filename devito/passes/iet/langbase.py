@@ -217,7 +217,7 @@ class DeviceAwareMixin(object):
 
     @iet_pass
     def initialize(self, iet, options=None):
-        from devito.passes.iet.languages.cuda import CudaHostFuncCallable
+        from devito.cuda.nodes import CudaHostFuncCallable
         """
         An `iet_pass` which transforms an IET such that the target language
         runtime is initialized.

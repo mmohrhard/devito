@@ -231,31 +231,6 @@ class Lock(Array):
     def locked_dimensions(self):
         return set().union(*[d._defines for d in self.dimensions])
 
-import ctypes
-class cudaEvent_t(ctypes.Structure):
-    pass
-
-class cudaStream_t(ctypes.Structure):
-    pass
-
-c_cudaEvent_p = ctypes.POINTER(cudaEvent_t)
-
-class CudaEvent(Scalar):
-
-    def __init__(self, name):
-        super().__init__(name=name, dtype=c_void_p)
-
-    @property
-    def _C_typename(self):
-        return "cudaEvent_t"
-    
-class CudaStream(Scalar):
-    def __init__(self, name):
-        super().__init__(name=name, dtype=c_void_p)
-
-    @property
-    def _C_typename(self):
-        return "cudaStream_t"
     
 class DeviceSymbol(Scalar):
 

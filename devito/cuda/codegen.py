@@ -1,16 +1,13 @@
 import cgen as c
 from devito.ir.equations.equation import OpInc
-from devito.types import Scalar
-from devito.symbolics import ccode, uxreplace, CondAnd
-from devito.tools import GenericVisitor, as_tuple, filter_ordered, filter_sorted, flatten
+
+from devito.symbolics import ccode, CondAnd
+from devito.tools import as_tuple, filter_ordered, filter_sorted, flatten
 from devito.ir.iet.visitors import CGen, MultilineCall, blankline, LambdaCollection
-from devito.types.basic import AbstractFunction, Basic
-from devito.types import (ArrayObject, CompositeObject, Dimension, Pointer,
-                          IndexedData, DeviceMap)
-from devito.ir.iet.nodes import (Node, Iteration, Expression, ExpressionBundle,
-                                 Call, Lambda, BlankLine, Section, AddressOf,
-                                 CLiteral, List)
-from devito.ir.iet.cuda import CudaCall, CudaCallable, CudaCallableBody, CudaTransferDirection
+from devito.types.basic import AbstractFunction
+from devito.types import IndexedData
+from devito.ir.iet.nodes import Call, Lambda, AddressOf, List
+from devito.cuda.nodes import CudaCallable, CudaTransferDirection
 from devito.ir.equations import DummyEq
 
 __all__ = ['CudaCGen']
@@ -120,7 +117,6 @@ class CudaCGen(CGen):
     
     def visit_CudaConstantDecl(self, o):
         return c.Statement("__constant__ %s %s = 0" % (o.function._C_basetypedata, o.function.name))
-   
 
     def visit_CudaTransfer(self, o):
         src = o.host_storage if o.direction == CudaTransferDirection.H2D else o.device_storage
@@ -161,8 +157,6 @@ class CudaCGen(CGen):
                 prep_args.append(ccode(o.stream))
             
             return c.Statement("prepareDataObject(%s)" % ', '.join(prep_args))
-        
-            #return c.If('!_cudaPtrIsManaged(%s)' % o.host_storage, c.Block(ops), c.Assign(o.device_storage, o.host_storage))
         else:        
             method = "transferDataObject"
             dest_args = [xfer_name, o.name, o.size]
@@ -188,8 +182,6 @@ class CudaCGen(CGen):
         if o.condition is not None:
             prep_args.append(ccode(o.condition))
         return c.Statement("prepareDataObject(%s)" % ', '.join(prep_args))
-    
-        #return c.If(condition, alloc)
 
     def visit_CudaDealloc(self, o):
         cond = o.operator_allocated
@@ -207,20 +199,16 @@ class CudaCGen(CGen):
             dest_args += [ccode(o.condition)]
 
         return c.Statement("destroyDataObject(%s)" % ', '.join(dest_args))
-        #return c.If(cond, c.Block(dealloc))
 
     def visit_CudaCallable(self, o):
         body = flatten(self._visit(i) for i in o.children)
-        preface = []
-        for p in filter_sorted(o.parameters):                    
-            if isinstance(p, AbstractFunction) or isinstance(p, IndexedData):
-                preface.append(c.Statement(f"__builtin_assume_aligned(_{p.name}, 256)"))
+
         decls = self._args_cuda_decl(o, o.parameters)
         prefix = template_clause(o)
         
         prefix = prefix + ' '.join(o.prefix + (o.retval,))
         signature = c.FunctionDeclaration(c.Value(prefix, o.name), decls)
-        return c.FunctionBody(signature, c.Block(preface + body))
+        return c.FunctionBody(signature, c.Block(body))
 
     def visit_CudaCall(self, o, nested_call=False):
         arguments = self._args_cuda_call(o, o.arguments)
@@ -275,11 +263,9 @@ class CudaCGen(CGen):
         else:
             kernel_decl.append(c.Line('constexpr char _cudaKernels[] = "";'))
 
-        # Kernel tuning
-        global_code.extend([c.Line(f'static tuningDict _kernelTuning;'), 
+        # Static storage for kernel tuning
+        global_code.extend([c.Line('static tuningDict _kernelTuning;'), 
                             blankline])
-
-        
 
         return c.Module(headers + includes + typedecls +
                         global_code + kernel_decl + esigns + [blankline, kernel] + efuncs + kfuncs)

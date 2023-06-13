@@ -23,7 +23,7 @@ from devito.types import Indexed, Symbol, Global
 __all__ = ['Node', 'Block', 'Expression', 'Callable', 'Call',
            'Conditional', 'Iteration', 'List', 'Section', 'TimedList', 'Prodder',
            'MetaCall', 'PointerCast', 'HaloSpot', 'Definition', 'ExpressionBundle',
-           'AugmentedExpression', 'Increment', 'Return', 'While',
+           'AugmentedExpression', 'Increment', 'Return', 'While', 'DeviceCall', 'DeviceFunction',
            'ParallelIteration', 'ParallelBlock', 'Dereference', 'Lambda',
            'SyncSpot', 'Pragma', 'DummyExpr', 'BlankLine', 'ParallelTree',
            'BusyWait', 'CallableBody', 'Transfer', 'HPtr', 'DPtr', 'AddressOf', 'CLiteral']
@@ -34,6 +34,7 @@ __all__ = ['Node', 'Block', 'Expression', 'Callable', 'Call',
 class Node(Signer):
 
     __metaclass__ = abc.ABCMeta
+    _CodeGen = None
 
     is_Block = False
     is_Iteration = False
@@ -362,7 +363,7 @@ class Expression(ExprStmt, Node):
 
     is_Expression = True
 
-    def __init__(self, expr, pragmas=None, init=False, operation=None, atomic=False):
+    def __init__(self, expr=None, pragmas=None, init=False, operation=None, atomic=False):
         self.expr = expr
         self.pragmas = as_tuple(pragmas)
         self.init = init
@@ -1450,3 +1451,22 @@ class CallArgType(Tag):
 
 HPtr = CallArgType('host pointer')
 DPtr = CallArgType('device pointer')
+
+
+class DeviceFunction(Callable):
+
+    """
+    A Callable executed asynchronously on a device.
+    """
+
+    def __init__(self, name, body, retval='void', parameters=None, prefix='__global__'):
+        super().__init__(name, body, retval, parameters=parameters, prefix=prefix)
+
+
+class DeviceCall(Call):
+
+    """
+    A call to an external function executed asynchronously on a device.
+    """
+
+    pass

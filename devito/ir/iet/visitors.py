@@ -22,7 +22,8 @@ from devito.tools import GenericVisitor, as_tuple, filter_ordered, filter_sorted
 from devito.types.basic import AbstractFunction, Basic
 from devito.types import (ArrayObject, CompositeObject, Dimension, Pointer,
                           IndexedData, DeviceMap)
-from devito.ir.iet.cuda import CudaCallable, CudaCallableBody, CudaTransferDirection
+
+import numpy as np
 
 __all__ = ['FindNodes', 'FindSections', 'FindSymbols', 'MapExprStmts', 'MapNodes',
            'IsPerfectIteration', 'printAST', 'CGen', 'CInterface', 'Transformer',
@@ -405,10 +406,6 @@ class CGen(Visitor):
 
         return code
 
-    def visit_CudaAtomicExpression(self, o):
-        assert(o.operation == OpInc)
-        code = c.Statement("atomicAdd(&%s, %s)" % (ccode(o.expr.lhs, dtype=o.dtype), ccode(o.expr.rhs, dtype=o.dtype)))
-        return code
 
     def visit_AugmentedExpression(self, o):
         code = c.Statement("%s %s= %s" % (ccode(o.expr.lhs, dtype=o.dtype), o.op,
@@ -416,12 +413,6 @@ class CGen(Visitor):
         if o.pragmas:
             code = c.Module(list(o.pragmas) + [code])
         return code
-
-    def visit_CudaCall(self, o, nested_call=False):
-        retobj = o.retobj
-        arguments = self._args_cuda_call(o, o.arguments)
-
-        return MultilineCudaCall(o.name, o.grid, o.threads, arguments, o.stream)
 
     def visit_Call(self, o, nested_call=False):
         retobj = o.retobj
@@ -492,67 +483,6 @@ class CGen(Visitor):
             return o.pragmas[0]
         else:
             return c.Collection(o.pragmas)
-
-    def visit_CudaTransfer(self, o):
-        src = o.host_storage if o.direction == CudaTransferDirection.H2D else o.device_storage
-        dst = o.device_storage if o.direction == CudaTransferDirection.H2D else o.host_storage
-        xfer_name = "cudaMemcpyHostToDevice" if o.direction == CudaTransferDirection.H2D else "cudaMemcpyDeviceToHost"
-        alloc = c.If('%s == nullptr' % o.device_storage,
-                     c.Block([
-                        c.Statement('CudaChecked(cudaMalloc((void**)&%s, %s))' % (o.device_storage, o.size)),
-                        c.Assign(o.operator_allocated, 1)
-                    ]))
-
-        if o.stream is not None:
-            xfer = c.Statement('CudaChecked(cudaMemcpyAsync(%s, %s, %s, %s, %s))' % (dst, src, o.size, xfer_name, o.stream))
-        else:
-            xfer = c.Statement('CudaChecked(cudaMemcpy(%s, %s, %s, %s))' % (dst, src, o.size, xfer_name))
-
-        ops = []
-
-        if o.direction == CudaTransferDirection.H2D:
-            ops.append(alloc)
-
-        if o.condition:
-            ops.append(c.If(o.condition, xfer))
-        else:
-            ops.append(xfer)
-
-        if o.delete:
-            ops.append(c.If(CondAnd(o.delete, o.operator_allocated), c.Block([
-                c.Statement('CudaChecked(cudaFree(%s))' % (o.device_storage)),
-                c.Assign(o.device_storage, "nullptr")])))
-
-        if o.direction == CudaTransferDirection.H2D:
-            return c.If('!_cudaPtrIsManaged(%s)' % o.host_storage, c.Block(ops), c.Assign(o.device_storage, o.host_storage))
-        else:        
-            return c.Collection(ops)
-
-    def visit_CudaAlloc(self, o):
-        alloc = c.Block([
-            c.Statement("CudaChecked(cudaMalloc((void**)&%s, %s))" % (o.device_storage, o.size)),
-            c.Assign(o.operator_allocated, 1)
-        ])
-
-        if o.condition:
-            condition = '%s && %s == nullptr' % (o.condition, o.device_storage)
-        else:
-            condition = '%s == nullptr' % (o.device_storage)
-
-        return c.If(condition, alloc)
-
-    def visit_CudaDealloc(self, o):
-        cond = o.operator_allocated
-
-        if o.condition:
-            cond = '%s && (%s)' % (o.operator_allocated, o.condition)
-
-        dealloc = [
-            c.Statement('CudaChecked(cudaFree(%s))' % (o.device_storage)),
-            c.Assign(o.device_storage, "nullptr")
-        ]
-
-        return c.If(cond, c.Block(dealloc))
 
     def visit_While(self, o):
         condition = ccode(o.condition)
@@ -633,11 +563,11 @@ class CGen(Visitor):
 
         # Elemental functions
         esigns = []
+        efuncs = [blankline]
+        for i in o._func_table.values():
+            if i.local:
+                prefix = ' '.join(i.root.prefix + (i.root.retval,))
                 esigns.append(c.FunctionDeclaration(c.Value(prefix, i.root.name),
-                    esigns.append(c.FunctionDeclaration(c.Value(prefix, i.root.name),
-                                                        self._args_cuda_decl(i.root, i.root.parameters)))
-                else:
-                    esigns.append(c.FunctionDeclaration(c.Value(prefix, i.root.name),
                                                         self._args_decl(i.root.parameters)))
                 efuncs.extend([self._visit(i.root), blankline])
 
@@ -1170,48 +1100,4 @@ class MultilineCall(c.Generable):
             tip = '(%s)%s' % (self.cast, tip)
         yield tip
 
-class MultilineCudaCall(c.Generable):
-
-    def __init__(self, name, grid, threads, arguments, stream=None):
-        self.name = name
-        self.grid = grid
-        self.threads = threads
-        self.arguments = as_tuple(arguments)
-        self.stream = stream
-
-    def generate(self):
-        grid = [1, 1, 1]
-        threads = [1, 1, 1]
-        for i in range(0, len(self.grid)):
-            grid[i] = str(self.grid[i])
-            if "/" in grid[i]:
-                grid[i] = "max(%s, 1)" % grid[i]
-            threads[i] = self.threads[i]
-
-        grid_name = "grid_%s" % self.name
-        thread_name = "threads_%s" % self.name
-        yield "dim3 %s;" % grid_name
-        yield "dim3 %s;" % thread_name
-        yield ("setupGrid(%s, %s, " % (grid_name, thread_name) + ", ".join(str(i) for i in grid) + ");")
-        tip = "%s<<<grid_%s, threads_%s, 0, %s>>>(" % (self.name, self.name, self.name, self.stream if self.stream is not None else "cudaStreamDefault")
-
-        processed = []
-        for i in self.arguments:
-            if isinstance(i, (MultilineCall, LambdaCollection)):
-                lines = list(i.generate())
-                if len(lines) > 1:
-                    yield tip + ",".join(processed + [lines[0]])
-                    for line in lines[1:-1]:
-                        yield line
-                    tip = ""
-                    processed = [lines[-1]]
-                else:
-                    assert len(lines) == 1
-                    processed.append(lines[0])
-            else:
-                processed.append(str(i))
-        tip = tip + ",".join(processed)
-        tip += ")"
-        tip += ";"
-
-        yield tip
+default_generator = CGen

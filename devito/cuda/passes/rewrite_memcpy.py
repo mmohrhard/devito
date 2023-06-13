@@ -10,9 +10,9 @@ from devito.symbolics import uxreplace
 from devito.tools import flatten, is_integer, timed_pass
 from devito.types import CustomDimension, Lock
 
-__all__ = ['rewrite_memcpy']
+__all__ = ['cuda_memcpy']
 
-def rewrite_memcpy(graph, **kwargs):
+def cuda_memcpy(graph, **kwargs):
     """
     Detects Expressions that are equivalent to 1D, 2D or 3D memcpy and rewrites them into CUDA memcpy calls
     """

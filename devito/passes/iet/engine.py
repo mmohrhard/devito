@@ -162,6 +162,7 @@ def create_call_graph(root, efuncs):
 
 
 def reuse_efuncs(root, efuncs):
+    from devito.cuda.nodes import CudaCallable
     """
     Generalise `efuncs` so that syntactically identical Callables may be dropped,
     thus maximizing code reuse.

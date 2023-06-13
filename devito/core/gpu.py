@@ -8,8 +8,8 @@ from devito.passes.equations import collect_derivatives
 from devito.passes.clusters import (Lift, Streaming, Tasker, blocking, buffering,
                                     cire, cse, factorize, fission, fuse,
                                     optimize_pows)
-from devito.passes.iet import (DeviceOmpTarget, DeviceAccTarget, DeviceCudaTarget, mpiize, hoist_prodders,
-                               is_on_device, linearize, cuda_linearize, pthreadify, relax_incr_dimensions, cuda_eventify, cuda_memcpy)
+from devito.passes.iet import (DeviceOmpTarget, DeviceAccTarget, mpiize, hoist_prodders,
+                               is_on_device, linearize, pthreadify, relax_incr_dimensions, cuda_memcpy)
 
 from devito.tools import as_tuple, timed_pass
 
@@ -301,11 +301,8 @@ class DeviceCustomOperator(DeviceOperatorMixin, CustomOperator):
             'parallel': parizer.make_parallel,
             'orchestrate': partial(orchestrator.process),
             'pthreadify': partial(pthreadify, sregistry=sregistry),
-            'cuda-events': partial(cuda_eventify, sregistry=sregistry),
             'mpi': partial(mpiize, **kwargs),
             'linearize': partial(linearize, mode=options['linearize'],
-                                 sregistry=sregistry),
-            'cuda-linearize': partial(cuda_linearize, mode=options['linearize'],
                                  sregistry=sregistry),
             'prodders': partial(hoist_prodders),
             'init': partial(parizer.initialize, options=options)

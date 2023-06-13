@@ -862,6 +862,9 @@ class IterationSpace(Space):
 
         return IterationSpace(intervals, sub_iterators, directions)
 
+    def translate(self, d, v0=0, v1=None):
+        return IterationSpace(self.intervals.translate(d, v0, v1), self.sub_iterators, self.directions)
+    
     def promote(self, cond):
         intervals = self.intervals.promote(cond)
         sub_iterators = {i.promote(cond).dim: self.sub_iterators[i.dim]
