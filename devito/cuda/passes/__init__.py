@@ -5,3 +5,4 @@ from .orchestrator import * # noqa
 from .realign import * # noqa
 from .tuning import * # noqa
 from .cudaizer import * # noqa
+from .rewrite_memcpy import * # noqa

@@ -9,7 +9,7 @@ from devito.passes.clusters import (Lift, Streaming, Tasker, blocking, buffering
                                     cire, cse, factorize, fission, fuse,
                                     optimize_pows)
 from devito.passes.iet import (mpiize, hoist_prodders,
-                               is_on_device, cuda_memcpy)
+                               is_on_device)
 
 __all__ = ['DeviceNoopCudaOperator','DeviceAdvCudaOperator', 'DeviceAdvCudaOperator', 'DeviceFsgCudaOperator',
            'DeviceCustomCudaOperator']
@@ -74,6 +74,7 @@ class DeviceCustomCudaOperator(DeviceCudaOperatorMixin, DeviceOperatorMixin, Cus
 
     @classmethod
     def _make_clusters_passes_mapper(cls, **kwargs):
+        from devito.cuda.passes import cuda_memcpy
         options = kwargs['options']
         platform = kwargs['platform']
         sregistry = kwargs['sregistry']

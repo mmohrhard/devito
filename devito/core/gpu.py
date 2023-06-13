@@ -9,7 +9,7 @@ from devito.passes.clusters import (Lift, Streaming, Tasker, blocking, buffering
                                     cire, cse, factorize, fission, fuse,
                                     optimize_pows)
 from devito.passes.iet import (DeviceOmpTarget, DeviceAccTarget, mpiize, hoist_prodders,
-                               is_on_device, linearize, pthreadify, relax_incr_dimensions, cuda_memcpy)
+                               is_on_device, linearize, pthreadify, relax_incr_dimensions)
 
 from devito.tools import as_tuple, timed_pass
 
