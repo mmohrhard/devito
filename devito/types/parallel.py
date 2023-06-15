@@ -23,7 +23,7 @@ from devito.types.misc import Pointer, VolatileInt
 __all__ = ['NThreads', 'NThreadsNested', 'NThreadsNonaffine', 'NThreadsBase',
            'DeviceID', 'ThreadID', 'Lock', 'PThreadArray', 'SharedData',
            'NPThreads', 'DeviceCreate', 'DeviceRM', 'UpdateHost', 'UpdateDevice',
-           'DevicePointer', 'QueueID', 'CudaEvent']
+           'DevicePointer', 'QueueID']
 
 
 class NThreadsBase(Scalar):

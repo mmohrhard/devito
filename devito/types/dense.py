@@ -543,8 +543,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         get back. If you only need to look at the values, use
         :meth:`data_ro_with_halo` instead.
         """
-        self._mark_halo_dirty()
         self._halo_exchange()
+        self._mark_halo_dirty()
         return self._data._global(self._mask_outhalo, self._decomposition_outhalo)
 
     _data_with_outhalo = data_with_halo
@@ -568,8 +568,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         Typically, this accessor won't be used in user code to set or read data
         values. Instead, it may come in handy for testing or debugging
         """
-        self._mark_halo_dirty()
         self._halo_exchange()
+        self._mark_halo_dirty()
         return np.asarray(self._data[self._mask_inhalo])
 
     @property
@@ -590,9 +590,9 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
 
         Typically, this accessor won't be used in user code to set or read data
         values. Instead, it may come in handy for testing or debugging
-        self._halo_exchange()
         """
         self._halo_exchange()
+        self._mark_halo_dirty()
         self._data.setflags(write=True)
         return np.asarray(self._data)
 

@@ -4,12 +4,12 @@
 #include <devito/jitify.hpp>
 #include <functional>
 #include <map>
+#include <set>
 #include <stdio.h>
 #include <tuple>
 #include <utility>
 
 #define TUNING_DEBUGGING
-
 #ifdef TUNING_DEBUGGING
 #define debug_printf(...) fprintf(stderr, __VA_ARGS__)
 #else
@@ -258,25 +258,85 @@ static void dim3_set(dim3 &d, int rank, int value) {
   }
 }
 
+static float _occupancyForKernel(CUfunction &k, const dim3 &block) {
+  static int max_sm_registers = 0;
+  static int max_block_registers;
+  static int max_sm_threads;
+  static int max_sm_blocks;
+  if (max_sm_registers == 0) {
+    int device = 0;
+    cudaGetDevice(&device);
+    cudaDeviceGetAttribute(&max_sm_threads,
+                           cudaDevAttrMaxThreadsPerMultiProcessor, device);
+    cudaDeviceGetAttribute(&max_sm_blocks,
+                           cudaDevAttrMaxBlocksPerMultiprocessor, device);
+    cudaDeviceGetAttribute(&max_sm_registers,
+                           cudaDevAttrMaxRegistersPerMultiprocessor, device);
+    cudaDeviceGetAttribute(&max_block_registers,
+                           cudaDevAttrMaxRegistersPerMultiprocessor, device);
+  }
+
+  int regs;
+  cuFuncGetAttribute(&regs, CU_FUNC_ATTRIBUTE_NUM_REGS, k);
+
+  int block_regs = regs * block.x * block.y * block.z;
+  int warp_regs = regs * 32;
+
+  int warps = (block.x * block.y * block.z) / 32;
+
+  int max_sm_warps = max_sm_threads / 32;
+
+  int max_warps_per_sm_reg = max_sm_registers / warp_regs;
+  int max_block_per_sm_reg = max_sm_registers / block_regs;
+
+  int active_warps = min(max_warps_per_sm_reg, max_block_per_sm_reg * warps);
+
+  int max_block_per_sm_warp = max_sm_warps / warps;
+  
+  debug_printf("\n");
+  debug_printf("warps per sm (register limited) = %d\n",
+               active_warps);
+  debug_printf("max blocks per sm (register limited) = %d\n",
+               max_block_per_sm_reg);
+  debug_printf("max blocks per sm (thread limited) = %d\n", max_block_per_sm_warp);
+
+  float warp_sm_reg_occupancy =
+      (32 * (float)active_warps) / (float)max_sm_threads;
+  float warp_sm_occupancy = (float)(max_block_per_sm_warp * block.x * block.y * block.z) / (float)max_sm_threads;
+  float block_sm_reg_occupancy =
+      ((block.x * block.y * block.z) * (float)max_block_per_sm_reg) /
+      (float)max_sm_blocks;
+  return fmin(1.0, fmin(warp_sm_reg_occupancy, fmin(warp_sm_occupancy, block_sm_reg_occupancy)));
+}
+
 static bool
 _check_kernel(const dim3 &block, const dim3 &sub_block,
               std::function<jitify::KernelInstantiation(dim3, dim3)> &builder,
-              bool &is_valid, float &est_occupancy) {
+              bool &is_valid, float &est_occupancy, int &max_block, int &regs,
+              float &occupancy) {
   // verify that it works by checking occupancy with the new block size
-  auto k = builder(block, sub_block);
+  CUfunction k = builder(block, sub_block);
 
   int grid = 0;
-  int max_block = 0;
 
   is_valid = false;
   est_occupancy = 0.f;
+  regs = 0;
+
+  debug_printf("\n\ntrying with block size (%d, %d, %d)..\n", block.x, block.y, block.z);
 
   CUresult res = cuOccupancyMaxPotentialBlockSize(&grid, &max_block,
                                                   (CUfunction)k, nullptr, 0, 0);
   if (res == 0) {
+
+    if (cuFuncGetAttribute(&regs, CU_FUNC_ATTRIBUTE_NUM_REGS, (CUfunction)k) !=
+        0)
+      return false;
+
+    occupancy = _occupancyForKernel(k, block);
     debug_printf("rebuilt kernel is valid, has max occupancy at %d threads "
-                 "(versus %d we calculated)\n",
-                 max_block, block.x * block.y * block.z);
+                 "(%.2f device occupancy), uses %d registers\n",
+                 max_block, 100. * occupancy, regs);
     if (max_block >= block.x * block.y * block.z) {
       is_valid = true;
 
@@ -300,10 +360,23 @@ inline float _est_efficiency(int ideal, dim3 proposed_block) {
          (float)ideal;
 }
 
+inline bool compare_options(float occupancy1, const dim3& block1, float occupancy2, const dim3& block2) {
+    float diff = fabs(occupancy2 - occupancy1);
+    if (occupancy1 > occupancy2 && diff > 0.01)
+        return false;
+
+    if (diff < 0.01)
+        return (block1.x * block1.y * block1.z) < (block2.x * block2.y * block2.z);
+
+    return true;
+}
+
 static tuned_kernel
 performTuning(tuningDict &tuning, const char *name, dim3 preferred,
               dim3 preferred_sub, dim3 expected_grid, int max_block_dimension,
               std::function<jitify::KernelInstantiation(dim3, dim3)> builder) {
+
+  int max_block = 0;
 
   // Calculate the maximum possible occupancy for the preferred block size
   auto tmp_kernel = builder(preferred, preferred_sub);
@@ -312,21 +385,22 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
     return tuning.at(cf);
   }
 
-  debug_printf(
-      "=== performing tuning for %s with default block %d,%d,%d, sub-block "
-      "%d,%d,%d, and expected grid size (%d, %d, %d)\n",
-      name, preferred.x, preferred.y, preferred.z, preferred_sub.x,
-      preferred_sub.y, preferred_sub.z, expected_grid.x, expected_grid.y,
-      expected_grid.z);
+  debug_printf("=== performing tuning for %s with default block "
+               "%d,%d,%d, sub-block "
+               "%d,%d,%d, and expected grid size (%d, %d, %d)\n",
+               name, preferred.x, preferred.y, preferred.z, preferred_sub.x,
+               preferred_sub.y, preferred_sub.z, expected_grid.x,
+               expected_grid.y, expected_grid.z);
 
   int grid;
-  int max_block;
+
   CUresult res =
       cuOccupancyMaxPotentialBlockSize(&grid, &max_block, cf, nullptr, 0, 0);
 
   if (res != 0) {
     fprintf(stderr,
-            "!!! invalid kernel detected! could not calculate occupancy for %s "
+            "!!! invalid kernel detected! could not calculate occupancy "
+            "for %s "
             "with blocksize (%d, %d, %d), sub-block size (%d, %d, %d)!\n",
             name, preferred.x, preferred.y, preferred.z, preferred_sub.x,
             preferred_sub.y, preferred_sub.z);
@@ -371,13 +445,22 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   // int best_diff = diff;
 
   // Assume the initial input is 'best' until we know otherwise
-  float best_eff = _est_efficiency(max_block, preferred);
-  debug_printf("base efficiency is %.2f\n", best_eff);
+  float best_eff = _occupancyForKernel(
+      cf, preferred); //_est_efficiency(max_block, preferred);
+  debug_printf("base occupancy is %.2f\n", best_eff);
+  if (best_eff > 0.99) {
+    tuning[cf] = result;
+    return tuning[cf];
+  }
+
   float next_eff = 0.f;
   bool next_valid = false;
   float tmp = 0.f;
 
   dim3 next_block;
+
+  std::set<std::tuple<int, int, int>> tried;
+  int next_regs;
 
   switch (max_block_dimension) {
   case 1:
@@ -387,14 +470,14 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
     break;
 
   case 2:
-    // for now, just use preferred size, even though that's suboptimal nearly
-    // always
+    // for now, just use preferred size, even though that's suboptimal
+    // nearly always
 
     break;
 
   case 3:
-    // Force small dimensions to have small block sizes, even if it means warp
-    // divergence
+    // Force small dimensions to have small block sizes, even if it means
+    // warp divergence
     for (int d = 0; d < 3; d++) {
       if (small_dims[d])
         dim3_set(block, d, 4);
@@ -410,32 +493,55 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
     } else {
       next_block = dim3(
           block.x > 1 ? min(block.x, nearest_square) : nearest_square,
-          block.y > 1 ? min(block.y, nearest_square) : nearest_square, 
-          block.z);
-      next_eff = _est_efficiency(threads, next_block);
+          block.y > 1 ? min(block.y, nearest_square) : nearest_square, block.z);
+      _check_kernel(next_block, preferred_sub, builder, next_valid, tmp,
+                    max_block, next_regs, next_eff);
 
-      _check_kernel(next_block, preferred_sub, builder, next_valid, tmp);
       if (next_valid) {
-        debug_printf(
-            "nearest square attempt would be %d,%d,%d (efficiency %.2f%%)\n",
-            next_block.x, next_block.y, next_block.z, 100. * next_eff);
+        debug_printf("nearest square attempt would be %d,%d,%d "
+                     "(occupancy %.2f%%)\n",
+                     next_block.x, next_block.y, next_block.z, 100. * next_eff);
 
-        if (next_eff > best_eff) {
+        if (compare_options(best_eff, std::get<0>(result), next_eff, next_block)) {
           result = tuned_kernel(next_block, preferred_sub);
           best_eff = next_eff;
         }
       }
 
-      next_block = dim3(1, block.y > 1 ? min(block.y, nearest_square & ~1) : (nearest_square & ~1), block.z);
-      next_block.x = threads / next_block.z / next_block.y;
-      next_eff = _est_efficiency(threads, next_block);
-      if (next_eff > best_eff) {
-        debug_printf("next guess is %d,%d,%d (efficiency %.2f%%)\n",
-                     next_block.x, next_block.y, next_block.z, 100. * next_eff);
-        _check_kernel(next_block, preferred_sub, builder, next_valid, tmp);
-        if (next_valid) {
-          best_eff = next_eff;
-          result = tuned_kernel(next_block, preferred_sub);
+      tried.emplace(std::make_tuple(next_block.x, next_block.y, next_block.z));
+      tried.emplace(std::make_tuple(next_block.y, next_block.x, next_block.z));
+
+      // find largest grid for which (kernel max occupancy threads) %
+      // (x*y*z) ~= 0
+      for (int offset = 0; offset < 3 && best_eff < 0.99999; offset++) {
+        int xy = max_block / block.z;
+
+        int x = (int)(floor(sqrtf(xy)));
+        while (x > 1 && (xy % x > 0))
+          x--;
+
+        next_block = dim3(x, (xy / x), block.z);
+
+        if (tried.find(std::make_tuple(next_block.x, next_block.y,
+                                       next_block.z)) == tried.end()) {
+          // next_block.x = threads / next_block.z / next_block.y;
+          debug_printf("next guess is %d,%d,%d\n", next_block.x, next_block.y,
+                       next_block.z);
+          _check_kernel(next_block, preferred_sub, builder, next_valid, tmp,
+                        max_block, next_regs, next_eff);
+
+          debug_printf(" (occupancy %.2f%%)\n", 100. * next_eff);
+          if (compare_options(best_eff, std::get<0>(result), next_eff,
+                              next_block)) {
+            if (next_valid) {
+              best_eff = next_eff;
+              result = tuned_kernel(next_block, preferred_sub);
+            }
+          }
+          tried.emplace(
+              std::make_tuple(next_block.x, next_block.y, next_block.z));
+          tried.emplace(
+              std::make_tuple(next_block.y, next_block.x, next_block.z));
         }
       }
     }
@@ -445,10 +551,11 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
     assert(false);
   }
 
-  debug_printf("selected block (%d, %d, %d), sub_block (%d, %d, %d)\n",
+  debug_printf("selected block (%d, %d, %d), sub_block (%d, %d, %d) with est. "
+               "occupancy = %.2f\n",
                std::get<0>(result).x, std::get<0>(result).y,
                std::get<0>(result).z, std::get<1>(result).x,
-               std::get<1>(result).y, std::get<1>(result).z);
+               std::get<1>(result).y, std::get<1>(result).z, best_eff);
   tuning[cf] = result;
   return tuning[cf];
 }

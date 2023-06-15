@@ -26,7 +26,7 @@ class CudaOrchestrator(Orchestrator):
     _host_stream = HostStream()
     _kernel_stream = KernelStream()
 
-    def _make_waitevent(self, iet, sync_ops):
+    def _make_waitlock(self, iet, sync_ops):
         waitloop = List(
             header=c.Comment("Wait for `%s` to be copied to the host" %
                              ",".join(s.function.name for s in sync_ops)),
@@ -144,7 +144,9 @@ class CudaOrchestrator(Orchestrator):
 
         if not sync_spots:
             if isinstance(iet, EntryFunction):
-                iet = iet._rebuild(body=List(body=[iet.body, CudaChecked(Call("cudaDeviceSynchronize", None))]))
+                iet = iet._rebuild(body=List(body=[iet.body, CudaChecked(Call("cudaStreamSynchronize", KernelStream())),
+                                                   CudaChecked(Call("cudaStreamSynchronize", MemCopyStream())),
+                                                   CudaChecked(Call("cudaStreamSynchronize", HostStream()))]))
             return iet, {}
 
         callbacks = OrderedDict([
@@ -173,6 +175,8 @@ class CudaOrchestrator(Orchestrator):
         events = [List(body=[Definition(e, None, None, NullPointer()),
                              self.lang.mapper['create-event'](e._C_symbol),
                              ]) for e in filter_ordered(events)]
-        iet = iet._rebuild(body = List(body=[events, iet.body, CudaChecked(Call("cudaDeviceSynchronize", None))]))
+        iet = iet._rebuild(body = List(body=[events, iet.body, CudaChecked(Call("cudaStreamSynchronize", KernelStream())),
+                                                   CudaChecked(Call("cudaStreamSynchronize", MemCopyStream())),
+                                                   CudaChecked(Call("cudaStreamSynchronize", HostStream()))]))
 
         return iet, {'efuncs': efuncs}

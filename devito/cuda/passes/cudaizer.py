@@ -135,9 +135,10 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
         kernel = []
         args = set()
 
-        # 2x2 sub blocking is generally a good start
-        sub_blocks = [2] * (len(valid_dims) - 1)
-
+        # TODO: tune sub-blocking
+        sub_blocks = [1] * (len(valid_dims) - 1)
+        if len(sub_blocks) > 0:
+            sub_blocks[0] = 2
         setup_iter = []
 
         iter_filter = []
@@ -149,7 +150,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
 
             has_sub_block = v < len(valid_dims) - 1
 
-            l_idx = "((threadIdx.x %s) %% _block_%s)" % ("" if v == len(valid_dims) - 1 else ("/ (%s)" % ' * '.join("_block_%s" % x for x in dim_vars[v+1:len(valid_dims)])), dim_vars[v])
+            l_idx = "((threadIdx.x %s) %% _block_%s)%s" % ("" if v == len(valid_dims) - 1 else ("/ (%s)" % ' * '.join("_block_%s" % x for x in dim_vars[v+1:len(valid_dims)])), dim_vars[v], "* _sub_block_" + dim_vars[v] + " " if has_sub_block else "")
             kernel.append(c.Initializer(c.Value('int', dim.name + ("_0" if has_sub_block else "")), "blockIdx.%s * _block_%s %s+ %s" % (dim_vars[v], dim_vars[v], "* _sub_block_" + dim_vars[v] + " " if has_sub_block else "", l_idx)))          
             args = args.union(symbols)
 
@@ -174,8 +175,8 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
         block = [1] * len(valid_dims)
         block[-1] = 32 # always want at least one warp worth, and preferably a multiple of warps
         if len(block) == 3:
-            block[0] = 4
-            block[1] = 4
+            block[0] = 1
+            block[1] = 32
         elif len(block) == 2:
             block[0] = 16
         else:
