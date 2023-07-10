@@ -442,15 +442,15 @@ class CudaAllocator(MemoryAllocator):
             self._throw_cuda_error(f"allocating {humanbytes(c_bytesize.value)} of {self.type} memory")
 
     def free(self, c_pointer, c_bytesize, type):
-        if self.type == 'host':
+        if type == 'host':
             ret = self.lib.cudaFreeHost(c_pointer)
-        elif self.type in ['device', 'shared']:
+        elif type in ['device', 'shared']:
             ret = self.lib.cudaFree(c_pointer)
         else:
-            raise RuntimeError(f"invalid CUDA allocation type {self.type}")
+            raise RuntimeError(f"invalid CUDA allocation type {type}")
 
         if ret != 0:
-            self._throw_cuda_error(f"freeing {self.type} memory")
+            self._throw_cuda_error(f"freeing {type} memory")
 
     def _throw_cuda_error(self, msg):
         err = self.lib.cudaGetLastError()
@@ -467,7 +467,7 @@ class CudaAllocator(MemoryAllocator):
             self._throw_cuda_error("getting current device")
 
     def set_device(self, device):
-        logger.info(f"changing CUDA device to {device}")
+        logger.info(f"changing allocator CUDA device to {device}")
         self.device = device
 
     def _set_cuda_device(self, device):

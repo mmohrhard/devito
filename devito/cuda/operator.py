@@ -65,7 +65,7 @@ class DeviceCustomCudaOperator(DeviceCudaOperatorMixin, DeviceOperatorMixin, Cus
             'pthreadify': partial(cuda_eventify, sregistry=sregistry),
             
             'mpi': partial(mpiize, **kwargs),
-            'linearize': partial(cuda_linearize, mode=options['linearize'],
+            'linearize': partial(cuda_linearize, mode=options.get('linearize', None),
                                  sregistry=sregistry),
 
             'prodders': partial(hoist_prodders),

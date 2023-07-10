@@ -11,7 +11,7 @@ from devito.tools.utils import flatten
 __all__ = ['kernel_tuning']
 
 @iet_pass
-def kernel_tuning(iet):
+def kernel_tuning(iet, **kwargs):
     if not isinstance(iet, EntryFunction):
         return iet, {}
     kernel_calls = FindNodes(CudaCall).visit(iet.body)

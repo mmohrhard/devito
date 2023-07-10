@@ -267,8 +267,8 @@ class CudaCGen(CGen):
         global_code.extend([c.Line('static tuningDict _kernelTuning;'), 
                             blankline])
 
-        return c.Module(headers + includes + typedecls +
-                        global_code + kernel_decl + esigns + [blankline, kernel] + efuncs + kfuncs)
+        return c.Module(headers + includes + [c.Line("namespace " + o.name + " {")] + typedecls +
+                        global_code + kernel_decl + esigns + [blankline, kernel] + efuncs + kfuncs + [c.Line("} // namespace " + o.name)])
 
 
 _cuda_math_funcs = ([c.Line(f'#define {f}(x) {f}f(x)') for f in ['sqrt', 'rsqrt', 'sin', 'cos', 'tan', 'atan', 'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh', 'erf', 'erfc', 'erfinv', 'erfcinv']] +

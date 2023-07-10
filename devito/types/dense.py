@@ -126,17 +126,19 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     def _allocate_memory(func):
         """Allocate memory as a Data."""
         @wraps(func)
+        def wrapper(self):
+            if self._data is None:
                 with nvtx.annotate(f"allocating {self.name}"):
                     debug("Allocating host memory for %s%s [%s]"
                         % (self.name, self.shape_allocated, humanbytes(self.nbytes)))
-                debug("Allocating host memory for %s%s [%s]"
+
                     with nvtx.annotate("host"):
                         # Allocate the actual data object
                         self._data = self._DataType(self.shape_allocated, self.dtype,
                                                     modulo=self._mask_modulo,
                                                     allocator=self._allocator,
                                                     distributor=self._distributor)
-                                            allocator=self._allocator,
+
                     if self._device_allocator:
                         with nvtx.annotate("device"):
                             debug("Allocating device memory for %s%s [%s]" % (self.name, self.shape_allocated, humanbytes(self.nbytes)))
@@ -160,10 +162,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                     else:
                         with nvtx.annotate("zeroing"):
                             self.data_with_halo.fill(0)
-                else:
-                    debug("initialized")
 
-                debug("initialized")
+                    debug("initialized")
 
             return func(self)
         return wrapper
@@ -704,6 +704,9 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         This accessor does *not* support global indexing.
         """
         self._ensure_host_update()        
+        # Note that we don't do a halo exchange here because
+        # write-only implies that nobody cares about the current
+        # values of the data
         self._mark_halo_dirty()
         self._data.setflags(write=True)
         return np.asarray(self._data)
@@ -750,6 +753,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     _C_structname = 'dataobj'
     _C_field_data = 'data'
     _C_field_device_data = 'device_data'
+    _C_field_device_accessible = 'device_accessible'
     _C_field_operator_allocated = 'operator_allocated'
     _C_field_size = 'size'
     _C_field_nopad_size = 'npsize'
@@ -761,6 +765,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
 
     _C_ctype = POINTER(type(_C_structname, (Structure,),
                             {'_fields_': [(_C_field_data, c_restrict_void_p),
+                                          (_C_field_device_accessible, c_int),
                                           (_C_field_device_data, c_restrict_void_p),
                                           (_C_field_operator_allocated, c_int),
                                           (_C_field_size, POINTER(c_ulong)),
@@ -779,6 +784,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         dataobj = byref(self._C_ctype._type_())
         dataobj._obj.data = data.ctypes.data_as(c_restrict_void_p)
         dataobj._obj.device_data = device_data.ctypes.data_as(c_restrict_void_p) if device_data is not None else c_restrict_void_p(0)
+        dataobj._obj.device_accessible = 0 # TODO: figure out how to set this properly
         dataobj._obj.operator_allocated = 1 if dataobj._obj.device_data == c_restrict_void_p(0) else 0
         dataobj._obj.size = (c_ulong*self.ndim)(*data.shape)
         # MPI-related fields
@@ -859,6 +865,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         if not MPI.Is_initialized() or MPI.COMM_WORLD.size == 1:
             # Nothing to do
             return
+        
         if MPI.COMM_WORLD.size > 1 and self._distributor is None:
             raise RuntimeError("`%s` cannot perform a halo exchange as it has "
                                "no Grid attached" % self.name)

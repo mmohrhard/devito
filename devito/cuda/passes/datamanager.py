@@ -17,11 +17,10 @@ from devito.passes.iet.parpragma import PragmaTransfer
 from devito.passes.iet.engine import iet_pass, iet_visit
 from devito.passes.iet.misc import is_on_device
 
-
+from devito.cuda.passes.tuning import kernel_tuning
 from devito.cuda.utils import flatten_dict
 from devito.cuda.lang import CudaBB
 from devito.cuda.nodes import CudaCall, CudaCallable, CudaDealloc, CudaHostFuncCall, CudaKernelPointerCast, CudaTransfer, DeviceCall, DeviceFunction
-from devito.cuda.passes.tuning import kernel_tuning
 
 __all__ = ['DeviceCudaDataManager']
 
@@ -345,27 +344,6 @@ class DeviceCudaDataManager(DataManager):
                 iet = iet._rebuild(body=iet.body._rebuild(casts=casts))
 
         return iet, {}
-    
-    # @iet_pass
-    # def tidy_up(self, iet, **kwargs):
-    #     class Tidier(Visitor):
-    #         """
-    #         A basic Visitor that performs rudimentary tidying up.
-
-    #         Currently limited to coalescing consecutive identical conditionals
-    #         """
-    #         def visit_object(self, o):
-    #             return o
-    #         def visit_list(self, o):
-    #             return o
-    #         def visit_tuple(self, o):
-    #             return o
-    #         def visit_Collection(self, o):
-    #             return o
-    #         def visit_List(self, o):
-    #             return o
-
-    #     return iet, {}#Tidier().visit(iet), {}
 
     @iet_pass
     def place_cuda_casts(self, iet, **kwargs):
@@ -384,5 +362,3 @@ class DeviceCudaDataManager(DataManager):
         self.place_cuda_casts(graph, mapper=cast_mapper)
         self.place_cuda_non_kernel_casts(graph)
         kernel_tuning(graph)
-        
-        #self.tidy_up(graph)

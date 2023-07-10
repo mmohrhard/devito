@@ -50,7 +50,12 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             # the grid/threads are (for now) set up in some C++ code from a header
             kthread = [1] * len(kdims)
 
-            partree = CudaCall(kernel_name, kgrid, kthread, preferred_block=kernel.preferred_block, preferred_sub_block=kernel.preferred_sub_block, arguments=kernel.parameters, kernel=kernel, stream=KernelStream())
+            partree = CudaCall(kernel_name, kgrid, kthread, 
+                               preferred_block=kernel.preferred_block, 
+                               preferred_sub_block=kernel.preferred_sub_block, 
+                               arguments=kernel.parameters, 
+                               kernel=kernel, 
+                               stream=KernelStream())
             # Make sure that the enclosing function knows we need the full size of the Functions
             partree.expr_symbols = as_tuple(flatten((partree.expr_symbols, kdims)))
 
@@ -110,6 +115,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
         body = realign_iet(body)
         # Find the iterators we consider eligible for being the GPU grid dimensions
         iterations = list([i for i in FindNodes(Iteration).visit(body) if i.is_ParallelRelaxed])
+        # FIXME: string matching is bad; use properties?
         possible_iter_dimensions = list(OrderedDict.fromkeys([x.dim for x in iterations if not x.dim.name.startswith("par_dim")]))
         grouped_iters = [(x, list(OrderedDict.fromkeys([i for i in iterations if i.dim == x]))) for x in possible_iter_dimensions]
         valid_dims = list(filter(lambda i: len(set([z.limits for z in i[1]])) == 1, grouped_iters))
@@ -139,6 +145,18 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
         sub_blocks = [1] * (len(valid_dims) - 1)
         if len(sub_blocks) > 0:
             sub_blocks[0] = 2
+
+        # TODO: figure out something better based on looking at access for spatial reuse
+        block = [1] * len(valid_dims)
+        block[-1] = 32 # always want at least one warp worth, and preferably a multiple of warps
+        if len(block) == 3:
+            block[0] = 1
+            block[1] = 32
+        elif len(block) == 2:
+            block[0] = 16
+        else:
+            block[0] = 128
+
         setup_iter = []
 
         iter_filter = []
@@ -150,12 +168,12 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
 
             has_sub_block = v < len(valid_dims) - 1
 
+            # TODO: Don't just jam C++ in here; turn it into nodes that we lower into C++ at codegen time
             l_idx = "((threadIdx.x %s) %% _block_%s)%s" % ("" if v == len(valid_dims) - 1 else ("/ (%s)" % ' * '.join("_block_%s" % x for x in dim_vars[v+1:len(valid_dims)])), dim_vars[v], "* _sub_block_" + dim_vars[v] + " " if has_sub_block else "")
             kernel.append(c.Initializer(c.Value('int', dim.name + ("_0" if has_sub_block else "")), "blockIdx.%s * _block_%s %s+ %s" % (dim_vars[v], dim_vars[v], "* _sub_block_" + dim_vars[v] + " " if has_sub_block else "", l_idx)))          
             args = args.union(symbols)
 
             if has_sub_block:
-                #sub_var = "_sub_block_%s" % dim_vars[v]
                 sub_iterator = "_" + dim_vars[v] + dim_vars[v]
                 setup_iter.append(c.Initializer(c.Value("int", dim.name), "%s + %s" % (dim.name + "_0", sub_iterator)))
 
@@ -170,17 +188,6 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             sub_var = "_sub_block_%s" % dim_vars[v]
             sub_iterator = "_" + dim_vars[v] + dim_vars[v]
             body = [c.Line("#pragma unroll"), c.Line("for (int %s = 0; %s < %s; %s++) {" % (sub_iterator, sub_iterator, sub_var, sub_iterator))] + body + [c.Line("}")]
-
-        # todo: figure out something better based on looking at access for spatial reuse
-        block = [1] * len(valid_dims)
-        block[-1] = 32 # always want at least one warp worth, and preferably a multiple of warps
-        if len(block) == 3:
-            block[0] = 1
-            block[1] = 32
-        elif len(block) == 2:
-            block[0] = 16
-        else:
-            block[0] = 128
 
 
         # Add the iteration body
