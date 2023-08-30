@@ -1,5 +1,6 @@
 from collections import OrderedDict, defaultdict, namedtuple
 from itertools import combinations
+from sympy import Mod
 
 from cached_property import cached_property
 import numpy as np
@@ -166,8 +167,14 @@ class Buffering(Queue):
 
                 expr = lower_exprs(Eq(lhs, rhs))
                 ispace = b.writeto
-                guards = {pd: GuardBound(d.root.symbolic_min, d.root.symbolic_max)
-                          for d in b.contraction_mapper}
+                guards = {}
+                for d in b.contraction_mapper:
+                    symbolic_max = d.root.symbolic_max
+                    try:
+                        factor = d.factor
+                    except Exception:
+                        factor = 1
+                    guards[pd] = GuardBound(d.root.symbolic_min, symbolic_max - Mod(symbolic_max, factor))
                 properties = {d: {PARALLEL} for d in ispace.itdimensions}
 
                 processed.append(
