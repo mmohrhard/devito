@@ -15,7 +15,7 @@ repos:
       hooks:
       - id: black
         types: [python]
-        args: ["--line-length 90"]
+        args: ["--line-length=90"]
         exclude: benchmarks|devito/arch|devito/builtins|devito/checkpointing|devito/core|devito/data|devito/finite_difference|devito/ir|devito/mpi|devito/operations|devito/operator|devito/passes|devito/symbolics|devito/tools|devito/types|devito/__init__.py|devito/_version.py|devito/exceptions.py|devito/logger.py|devito/parameters.py|examples|tests|docs|scripts|versioneer.py|setup.py
     - repo: https://github.com/pycqa/flake8
       rev: 6.1.0
