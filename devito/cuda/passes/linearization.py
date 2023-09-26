@@ -4,17 +4,15 @@ import numpy as np
 from devito.cuda.nodes import CudaCallable
 
 from devito.data import FULL
-from devito.ir import (BlankLine, Call, DummyExpr, Dereference, List, PointerCast,
-                       Transfer, FindNodes, FindSymbols, Transformer, Uxreplace,
-                       Definition, Block)
+from devito.ir import (BlankLine, Call, Dereference, PointerCast,
+                       FindNodes, FindSymbols, Transformer, Uxreplace)
 from devito.passes.iet.engine import iet_pass
 from devito.symbolics import DefFunction, MacroArgument, ccode
 from devito.tools import Bunch, DefaultOrderedDict, filter_ordered, flatten, prod
-from devito.types import Array, Symbol, FIndexed, Indexed, Wildcard
+from devito.types import Array, FIndexed, Indexed
 from devito.types.basic import IndexedData
 from devito.types.dense import DiscreteFunction
 from devito.types.misc import Global
-from devito.logger import debug, info
 
 from devito.cuda.nodes import CudaConstantWrite, CudaConstantDecl
 
@@ -22,10 +20,12 @@ import cgen as c
 
 __all__ = ['cuda_linearize']
 
+
 class Assert(Call):
     def __init__(self, condition):
         super().__init__("assert", condition)
         self._condition = condition
+
 
 def cuda_linearize(graph, **kwargs):
     """
@@ -84,7 +84,6 @@ def linearize_accesses(iet, key, track, sregistry):
 
     # Find unique sizes (unique -> minimize necessary registers)
     mapper = DefaultOrderedDict(list)
-    other_mapper = DefaultOrderedDict(list)
     for f in selected:
         # NOTE: the outermost dimension is unnecessary
         for d in f.dimensions[1:]:
@@ -92,10 +91,16 @@ def linearize_accesses(iet, key, track, sregistry):
             # never asserted throughout the compiler yet... maybe should do
             # it when in debug mode at `prepare_arguments` time, ie right
             # before jumping to C?
-            # Let's uniquify the dimensions a little more to make it more likely that padding
-            # won't be an issue.. include 'total number of dimensions' and 'dimension of index relative to
+            # Let's uniquify the dimensions a little more to make it more
+            # likely that padding won't be an issue.. include 'total number
+            # of dimensions' and 'dimension of index relative to
             # most rapidly-changing dimension'
-            mapper[(d, f._size_halo[d], f._size_padding[d], len(f.dimensions), f.dimensions.index(d) - len(f.dimensions) - 1, getattr(f, 'grid', None))].append(f)
+            mapper[(d,
+                    f._size_halo[d],
+                    f._size_padding[d],
+                    len(f.dimensions),
+                    f.dimensions.index(d) - len(f.dimensions) - 1,
+                    getattr(f, 'grid', None))].append(f)
 
     # For all unseen Functions, build the size exprs. For example:
     # `x_fsz0 = u_vec->size[1]`
@@ -112,8 +117,14 @@ def linearize_accesses(iet, key, track, sregistry):
                 # throw an assertion into the output so that the operator will crash
                 # if it was otherwise going to produce invalid results
                 if f != v[0] and isinstance(v[0], DiscreteFunction):
-                    track[f].stmts0.append(c.Statement("assert(%s == %s)" % (f._C_get_field(FULL, d).size if isinstance(f, DiscreteFunction) else f.symbolic_shape[d],
-                                                    v[0]._C_get_field(FULL, d).size if isinstance(v[0], DiscreteFunction) else v[0].symbolic_shape[d])))
+                    track[f].stmts0.append(
+                        c.Statement("assert(%s == %s)" % (
+                            (f._C_get_field(FULL, d).size
+                             if isinstance(f, DiscreteFunction)
+                             else f.symbolic_shape[d]),
+                            (v[0]._C_get_field(FULL, d).size
+                             if isinstance(v[0], DiscreteFunction)
+                             else v[0].symbolic_shape[d]))))
 
     _globals = []
 
@@ -201,6 +212,7 @@ def _(f, d, sregistry):
     expr = f.symbolic_shape[d]
     return (CudaConstantDecl(s, np.int64), CudaConstantWrite(s, expr), expr)
 
+
 @singledispatch
 def _generate_macro(f, szs, sregistry):
     return
@@ -237,13 +249,13 @@ def linearize_pointers(iet, key):
 
         # Linearize casts, e.g. `float *u = (float*) u_vec->data`
         mapper.update({n: n._rebuild(flat=True)
-                    for n in FindNodes(PointerCast).visit(iet)
-                    if n.function in candidates})
+                       for n in FindNodes(PointerCast).visit(iet)
+                       if n.function in candidates})
 
         # Linearize array dereferences, e.g. `float *r1 = (float*) pr1[tid]`
         mapper.update({n: n._rebuild(flat=True)
-                    for n in FindNodes(Dereference).visit(iet)
-                    if n.pointer.is_PointerArray and n.pointee in candidates})
+                       for n in FindNodes(Dereference).visit(iet)
+                       if n.pointer.is_PointerArray and n.pointee in candidates})
 
         global_mapper[kernel] = Transformer(mapper).visit(kernel)
 

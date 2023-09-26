@@ -1,6 +1,7 @@
 from devito.ir.iet.visitors import Visitor
 from devito.ir.iet.nodes import List
 
+
 class IterationExtractor(Visitor):
     def __init__(self, dims):
         super(Visitor, self).__init__()

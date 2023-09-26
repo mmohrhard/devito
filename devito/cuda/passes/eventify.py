@@ -3,11 +3,13 @@ from collections import OrderedDict
 import numpy as np
 
 from devito.ir.iet.efunc import AsyncCall, ThreadCallable
-from devito.ir.iet.nodes import BlankLine, Call, Callable, Definition, Dereference, DummyExpr, List, PointerCast, Return
+from devito.ir.iet.nodes import (BlankLine, Call, Callable, Definition, Dereference,
+                                 DummyExpr, List, PointerCast, Return)
 from devito.ir.iet.visitors import FindNodes, FindSymbols, Transformer
 from devito.logger import debug
 from devito.passes.iet.engine import iet_pass
-from devito.symbolics.extended_sympy import VOID, Byref, FieldFromComposite, FieldFromPointer, Null, SizeOf
+from devito.symbolics.extended_sympy import (VOID, Byref, FieldFromComposite,
+                                             FieldFromPointer, Null, SizeOf)
 from devito.symbolics.printer import ccode
 from devito.tools.data_structures import Bunch, DefaultOrderedDict
 from devito.tools.utils import as_list, flatten, split
@@ -19,6 +21,7 @@ from devito.cuda.types import NullPointer
 
 __all__ = ['cuda_eventify']
 
+
 def cuda_eventify(graph, **kwargs):
     """
     Rewrites AsyncCalls into CUDA host launches
@@ -28,6 +31,7 @@ def cuda_eventify(graph, **kwargs):
     debug("performing CUDA eventification")
     lower_async_callables(graph, track=track, root=graph.root, **kwargs)
     lower_async_calls(graph, track=track, **kwargs)
+
 
 class CudaSharedData(ThreadArray):
 
@@ -61,6 +65,7 @@ class CudaSharedData(ThreadArray):
         fields.extend(as_list(kwargs.get('ncfields')))
         return [(i._C_name, i._C_ctype) for i in fields]
 
+
 @iet_pass
 def lower_async_callables(iet, track=None, root=None, sregistry=None):
     if not isinstance(iet, CudaHostFuncCallable):
@@ -83,10 +88,11 @@ def lower_async_callables(iet, track=None, root=None, sregistry=None):
     defines = set(FindSymbols('defines').visit(iet))
     bases = sorted({i.base for i in indexeds}, key=lambda i: i.name)
     casts = [PointerCast(i.function, obj=i) for i in bases
-                if i not in defines]
+             if i not in defines]
 
     # need to rewrite these extra parameters into every call for this Callable
-    extra_parameters = tuple([i for i in FindSymbols('basics').visit(casts) if i not in iet.parameters])
+    extra_parameters = tuple([i for i in FindSymbols('basics').visit(casts)
+                              if i not in iet.parameters])
     track[iet.name].extra_args = extra_parameters
 
     fields = iet.parameters + extra_parameters
@@ -95,19 +101,19 @@ def lower_async_callables(iet, track=None, root=None, sregistry=None):
 
     # SharedData -- that is the data structure that will be used by the
     # main thread to pass information down to the child thread(s)
-    sdata = track[iet.name].sdata = CudaSharedData(name='sdata',
-                                               npthreads=1,
-                                               cfields=cfields,
-                                               ncfields=ncfields,
-                                               pname='tsdata%d' % n)
+    sdata = track[iet.name].sdata = CudaSharedData(
+        name='sdata',
+        npthreads=1,
+        cfields=cfields,
+        ncfields=ncfields,
+        pname='tsdata%d' % n)
     sbase = sdata.symbolic_base
 
     # Prepend the SharedData fields available upon thread activation
-    #preactions = [DummyExpr(i, FieldFromPointer(i.name, sbase)) for i in ncfields]
-    #preactions.append(BlankLine)
     preactions = [
         Call("nvtxRangePush", ("__FUNCTION__",))
     ]
+
     # Append the flag reset
     postactions = [List(body=[
         BlankLine,
@@ -172,7 +178,7 @@ def lower_async_calls(iet, track=None, sregistry=None):
 
         # Call to `sdata` initialization Callable
         sbase = sdata.symbolic_base
-        d = 0#threads.index
+        d = 0
         arguments = []
         for a in n.arguments + b.extra_args:
             if a in sdata.ncfields:
@@ -184,23 +190,27 @@ def lower_async_calls(iet, track=None, sregistry=None):
                 arguments.append(a)
         # Each pthread has its own SharedData copy
         arguments.append(sbase + d)
-        #assert len(efuncs[n.name].parameters) == len(arguments)
+
         call0 = Call(efuncs[n.name].name, arguments)
 
         initialization.append(Definition(sdata, None, None, NullPointer()))
 
         # Activation
-        #if threads.size == 1:
         d = 0
 
         activation = [c.Comment("Allocate a new block of data for this invocation"),
-                      Call("posix_memalign", (VOID(Byref(sdata), '**'), 64, SizeOf(sdata._C_typedata))),
+                      Call("posix_memalign", (VOID(Byref(sdata), '**'),
+                                              64,
+                                              SizeOf(sdata._C_typedata))),
                       call0]
         activation.extend([DummyExpr(FieldFromComposite(i.name, sdata[d]), i)
                            for i in sdata.ncfields])
 
         activation.append(
-           c.Statement("cudaLaunchHostFunc(%s, (cudaHostFn_t)%s, %s)" % (n.stream if n.stream is not None else 0, n.name, ccode(sbase + d))),
+            c.Statement("cudaLaunchHostFunc(%s, (cudaHostFn_t)%s, %s)" % (
+                n.stream if n.stream is not None else 0,
+                n.name,
+                ccode(sbase + d))),
         )
 
         activation = List(

@@ -1,6 +1,8 @@
 from functools import partial
 
-from devito.core.gpu import DeviceNoopOperator, DeviceAdvOperator, DeviceFsgOperator, DeviceOperatorMixin, make_callbacks
+from devito.core.gpu import (DeviceNoopOperator, DeviceAdvOperator,
+                             DeviceFsgOperator, DeviceOperatorMixin,
+                             make_callbacks)
 from devito.core.operator import CustomOperator
 from devito.cuda.target import DeviceCudaTarget
 
@@ -11,15 +13,18 @@ from devito.passes.clusters import (Lift, Streaming, Tasker, blocking, buffering
 from devito.passes.iet import (mpiize, hoist_prodders,
                                is_on_device)
 
-__all__ = ['DeviceNoopCudaOperator','DeviceAdvCudaOperator', 'DeviceAdvCudaOperator', 'DeviceFsgCudaOperator',
+__all__ = ['DeviceNoopCudaOperator', 'DeviceAdvCudaOperator',
+           'DeviceAdvCudaOperator', 'DeviceFsgCudaOperator',
            'DeviceCustomCudaOperator']
 # CUDA
 
+
 class DeviceCudaOperatorMixin(object):
     from devito.cuda.codegen import CudaCGen
-    
+
     _Target = DeviceCudaTarget
     _CodeGen = CudaCGen
+
     @classmethod
     def _normalize_kwargs(cls, **kwargs):
         oo = kwargs['options']
@@ -30,8 +35,10 @@ class DeviceCudaOperatorMixin(object):
 
         return kwargs
 
+
 class DeviceNoopCudaOperator(DeviceCudaOperatorMixin, DeviceNoopOperator):
     pass
+
 
 class DeviceAdvCudaOperator(DeviceCudaOperatorMixin, DeviceAdvOperator):
     pass
@@ -40,16 +47,19 @@ class DeviceAdvCudaOperator(DeviceCudaOperatorMixin, DeviceAdvOperator):
 class DeviceFsgCudaOperator(DeviceCudaOperatorMixin, DeviceFsgOperator):
     pass
 
-class DeviceCustomCudaOperator(DeviceCudaOperatorMixin, DeviceOperatorMixin, CustomOperator):    
+
+class DeviceCustomCudaOperator(DeviceCudaOperatorMixin, DeviceOperatorMixin,
+                               CustomOperator):
     @classmethod
     def _make_dsl_passes_mapper(cls, **kwargs):
         return {
             'collect-derivs': collect_derivatives,
         }
+
     @classmethod
     def _make_iet_passes_mapper(cls, **kwargs):
         from devito.cuda.passes import cuda_eventify, cuda_linearize
-        
+
         options = kwargs['options']
         platform = kwargs['platform']
         compiler = kwargs['compiler']
@@ -63,7 +73,7 @@ class DeviceCustomCudaOperator(DeviceCudaOperatorMixin, DeviceOperatorMixin, Cus
             'cuda': parizer.make_parallel,
             'orchestrate': partial(orchestrator.process),
             'pthreadify': partial(cuda_eventify, sregistry=sregistry),
-            
+
             'mpi': partial(mpiize, **kwargs),
             'linearize': partial(cuda_linearize, mode=options.get('linearize', None),
                                  sregistry=sregistry),

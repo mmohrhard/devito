@@ -7,7 +7,7 @@ from devito.ir.iet.nodes import Conditional
 from devito.arch import CUDA, NVIDIAX
 from devito.ir import (Call, List,
                        Block, ParallelIteration, Pragma, Definition,
-                       FindNodes, FindSymbols, Lambda)
+                       FindSymbols, Lambda)
 from devito.passes.iet.parpragma import PragmaLangBB, PragmaTransfer
 from devito.symbolics import Byref, VOID, INT, CondEq
 
@@ -16,7 +16,16 @@ from devito.passes.iet.languages.utils import make_clause_reduction
 from devito.passes.iet.misc import is_on_device
 from devito.tools import filter_ordered
 from devito.types import Symbol
-from devito.cuda.nodes import KernelStream, HostStream, NcclStream, MemCopyStream, CudaChecked, CudaTransfer, CudaAlloc, CudaCall, CudaDealloc
+from devito.cuda.nodes import (
+    KernelStream,
+    HostStream,
+    NcclStream,
+    MemCopyStream,
+    CudaChecked,
+    CudaTransfer,
+    CudaAlloc,
+    CudaDealloc
+)
 from devito.cuda.types import NullPointer, JitifyCache, JitifyProgram
 
 
@@ -72,14 +81,14 @@ class DeviceCudaIteration(ParallelIteration):
         return kwargs
 
 
-
-    
 class CudaBB(PragmaLangBB):
 
     mapper = {
         # Misc
         'name': 'CUDA',
-        'headers': ['cuda.h', 'cuda_runtime_api.h', 'nvtx3/nvToolsExt.h', 'stdio.h', 'assert.h', 'devito/devito_cuda.cuh', 'nccl.h', 'devito/jitify.hpp'],
+        'headers': ['cuda.h', 'cuda_runtime_api.h', 'nvtx3/nvToolsExt.h',
+                    'stdio.h', 'assert.h', 'devito/devito_cuda.cuh',
+                    'nccl.h', 'devito/jitify.hpp'],
         'global-decls': [
             Definition(HostStream(), initvalue="nullptr", prefix="static"),
             Definition(MemCopyStream(), initvalue="nullptr", prefix="static"),
@@ -93,15 +102,29 @@ class CudaBB(PragmaLangBB):
         'aligned': lambda i:
             '__attribute__((aligned(%d)))' % i,
         'init': lambda args:
-            List(body=[Conditional(CondEq(HostStream(), NullPointer()), Call("cudaStreamCreateWithFlags", (Byref(HostStream()), "cudaStreamNonBlocking"))),
-                       Conditional(CondEq(MemCopyStream(), NullPointer()), Call("cudaStreamCreateWithFlags", (Byref(MemCopyStream()), "cudaStreamNonBlocking"))),
-                       Conditional(CondEq(KernelStream(), NullPointer()), Call("cudaStreamCreateWithFlags", (Byref(KernelStream()), "cudaStreamNonBlocking"))),
-                       Conditional(CondEq(NcclStream(), NullPointer()), Call("cudaStreamCreateWithFlags", (Byref(NcclStream()), "cudaStreamNonBlocking"))),
+            List(body=[Conditional(CondEq(HostStream(), NullPointer()),
+                                   Call("cudaStreamCreateWithFlags",
+                                        (Byref(HostStream()),
+                                         "cudaStreamNonBlocking"))),
+                       Conditional(CondEq(MemCopyStream(), NullPointer()),
+                                   Call("cudaStreamCreateWithFlags",
+                                        (Byref(MemCopyStream()),
+                                         "cudaStreamNonBlocking"))),
+                       Conditional(CondEq(KernelStream(), NullPointer()),
+                                   Call("cudaStreamCreateWithFlags",
+                                        (Byref(KernelStream()),
+                                         "cudaStreamNonBlocking"))),
+                       Conditional(CondEq(NcclStream(), NullPointer()),
+                                   Call("cudaStreamCreateWithFlags",
+                                        (Byref(NcclStream()),
+                                         "cudaStreamNonBlocking"))),
 
                        Definition(JitifyCache("kernel_cache"), prefix="static"),
-                       Definition(JitifyProgram("program"), initvalue=Call("kernel_cache.program", ("_cudaKernels", 0))),
+                       Definition(JitifyProgram("program"),
+                                  initvalue=Call("kernel_cache.program",
+                                                 ("_cudaKernels", 0))),
                        Call("nvtxRangePush", ("__FUNCTION__", )),
-            ]),
+                       ]),
         'fini': lambda args:
             List(body=[Call("nvtxRangePop")]),
         'num-devices': lambda args, retobj:
@@ -110,63 +133,63 @@ class CudaBB(PragmaLangBB):
         'set-device': lambda device:
             CudaChecked(Call("cudaSetDevice", (device,))),
         # Pragmas
-        'atomic': None, # CUDA doesn't use a pragma for this
+        'atomic': None,  # CUDA doesn't use a pragma for this
         'map-enter-to': lambda i, j:
-            None, #c.Pragma('acc enter data copyin(%s%s)' % (i, j)),
+            None,
         'map-enter-to-wait': lambda i, j, k:
-            None, #(c.Pragma('acc enter data copyin(%s%s) async(%s)' % (i, j, k)),
-            # c.Pragma('acc wait(%s)' % k)),
+            None,
         'map-enter-alloc': lambda i, j:
-            None, #c.Pragma('acc enter data create(%s%s)' % (i, j)),
+            None,
         'map-present': lambda i, j:
-            None, #c.Pragma('acc data present(%s%s)' % (i, j)),
+            None,
         'map-wait': lambda i:
-            None, #c.Pragma('acc wait(%s)' % i),
+            None,
         'map-update': lambda i, j:
-            None, #c.Pragma('acc update self(%s%s)' % (i, j)),
+            None,
         'map-update-host-if': lambda i, j, k:
-            None, #c.Pragma('acc update self(%s%s) if(%s)' % (i, j, k)),
+            None,
         'map-update-host': lambda i, j:
-            None, #c.Pragma('acc update self(%s%s)' % (i, j)),
+            None,
         'map-update-host-async': lambda i, j, k:
-            None, #c.Pragma('acc update self(%s%s) async(%s)' % (i, j, k)),
+            None,
         'map-update-host-async-if': lambda i, j, k, l:
-            None, #c.Pragma('acc update self(%s%s) async(%s) if(%s)' % (i, j, k, l)),
+            None,
         'map-update-device': lambda i, j:
-            None, #c.Pragma('acc update device(%s%s)' % (i, j)),
+            None,
         'map-update-device-async': lambda i, j, k:
-            None, #c.Pragma('acc update device(%s%s) async(%s)' % (i, j, k)),
+            None,
         'map-update-device-async-if': lambda i, j, k, l:
-            None, #c.Pragma('acc update device(%s%s) async(%s) if(%s)' % (i, j, k, l)),
+            None,
         'map-release': lambda i, j:
-            None, #c.Pragma('acc exit data delete(%s%s)' % (i, j)),
+            None,
         'map-release-if': lambda i, j, k:
-            None, #c.Pragma('acc exit data delete(%s%s) if(%s)' % (i, j, k)),
+            None,
         'map-exit-delete': lambda i, j:
-            None, #c.Pragma('acc exit data delete(%s%s)' % (i, j)),
+            None,
         'map-exit-delete-if': lambda i, j, k:
-            None, #c.Pragma('acc exit data delete(%s%s) if(%s)' % (i, j, k)),
+            None,
         'memcpy-to-device': lambda i, j, k:
             Call('acc_memcpy_to_device', [i, j, k]),
         'memcpy-to-device-wait': lambda i, j, k, l:
             Lambda(body=[Call('acc_memcpy_to_device_async', [i, j, k, l]),
-                       Call('acc_wait', [l])]),
+                         Call('acc_wait', [l])]),
         'device-get':
             # calls a helper function since we expect a return value
             Call('_cudaGetCurrentDevice'),
         'device-alloc': lambda i, *a, retobj=None:
             CudaChecked(Call('cudaMalloc', (VOID(Byref(retobj), '**'), i,))),
         'device-free': lambda i, *a:
-            #Call('acc_free', (i,))
             CudaChecked(Call('cudaFree', (i,))),
-        'host-alloc': lambda i, j, k: # this isn't really 'host', it's 'high bandwidth memory'
+        'host-alloc': lambda i, j, k:
+            # this isn't really 'host', it's 'high bandwidth memory'
             CudaChecked(Call("cudaMallocHost", (i, k,))),
         'host-free': lambda i:
             CudaChecked(Call("cudaFreeHost", (i,))),
         'wait-event': lambda i, j:
             CudaChecked(Call("cudaStreamWaitEvent", (i, j,))),
         'create-event': lambda i:
-            CudaChecked(Call("cudaEventCreateWithFlags", (Byref(i), "cudaEventDisableTiming"))),
+            CudaChecked(Call("cudaEventCreateWithFlags",
+                             (Byref(i), "cudaEventDisableTiming"))),
         'destroy-event': lambda i:
             CudaChecked(Call("cudaEventDestroy", (i,))),
         'record-event': lambda i, j:
@@ -208,7 +231,7 @@ class CudaBB(PragmaLangBB):
     @classmethod
     def _map_release(cls, f, imask=None, devicerm=None):
         return CudaDealloc(f, imask, devicerm)
-    
+
     @classmethod
     def _map_update_host_async(cls, f, imask=None, qid=None, condition=None):
         return CudaTransfer(f, imask, condition, CudaTransferDirection.D2H, stream=qid)
