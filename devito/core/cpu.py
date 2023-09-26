@@ -114,7 +114,8 @@ class Cpu64OperatorMixin(object):
         o['cire-ftemps'] = oo.pop('cire-ftemps', False)
         o['cire-mingain'] = oo.pop('cire-mingain', cls.CIRE_MINGAIN)
         o['cire-schedule'] = oo.pop('cire-schedule', cls.CIRE_SCHEDULE)
-
+        o['cire-aggressive'] = oo.pop('cire-aggressive', False)
+        
         # Shared-memory parallelism
         o['par-collapse-ncores'] = oo.pop('par-collapse-ncores', cls.PAR_COLLAPSE_NCORES)
         o['par-collapse-work'] = oo.pop('par-collapse-work', cls.PAR_COLLAPSE_WORK)

@@ -97,6 +97,7 @@ class DeviceOperatorMixin(object):
         o['cire-ftemps'] = oo.pop('cire-ftemps', False)
         o['cire-mingain'] = oo.pop('cire-mingain', cls.CIRE_MINGAIN)
         o['cire-schedule'] = oo.pop('cire-schedule', cls.CIRE_SCHEDULE)
+        o['cire-aggressive'] = oo.pop('cire-aggressive', False)
 
         # GPU parallelism
         o['par-tile'] = ParTile(oo.pop('par-tile', False), default=(32, 4))

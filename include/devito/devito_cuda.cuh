@@ -30,6 +30,7 @@
     cudaGetDevice(&device);                                                    \
     assert(device >= 0 && device < MAX_CUDA_DEVICES);                          \
     if (NAME##_device[device] == nullptr) {                                    \
+      debug_printf("allocating %llu bytes for " STRINGIFY(NAME) " on device %d\n", SIZE, device);   \
       CudaChecked(cudaMalloc((void **)&NAME##_device[device], (SIZE)));        \
       cudaMemset(NAME##_device[device], 1, (SIZE));                            \
     }                                                                          \
@@ -49,7 +50,7 @@
   static ARRAYTYPE *NAME##_device[MAX_CUDA_DEVICES] = {0};
 
 #define PER_DEVICE_ARRAY_TEMP_GET(NAME, NBYTES)                                \
-  _allocTempArray(&NAME##_device[_cudaGetCurrentDevice()], NBYTES)
+  _allocTempArray(&NAME##_device[_cudaGetCurrentDevice()], NBYTES, STRINGIFY(NAME))
 
 #define PER_DEVICE_ARRAY_TEMP_DESTROY(NAME)                                    \
   {                                                                            \
@@ -91,7 +92,10 @@ template <typename T> void _freeTempArray(T *array) {
   CudaChecked(cudaFreeHost(array));
 }
 
-template <typename T> inline T *_allocTempArray(T **array_ptr, size_t nbytes) {
+template <typename T> inline T *_allocTempArray(T **array_ptr, size_t nbytes, const char* name) {
+  int device = 0;                                                            
+  cudaGetDevice(&device);
+
   if (*array_ptr == nullptr) {
     CudaChecked(cudaMallocHost((void **)array_ptr, sizeof(T)));
     memset((void *)(*array_ptr), 0, sizeof(T));
@@ -99,6 +103,7 @@ template <typename T> inline T *_allocTempArray(T **array_ptr, size_t nbytes) {
 
   T *array = *array_ptr;
   if (array->nbytes != nbytes) {
+    debug_printf("%sallocating %llu bytes for %s for temporary data on device %d\n", array->nbytes > 0 ? "re" : "", nbytes, name, device);
     _freeTempArrayData(array);
     CudaChecked(cudaMallocHost((void **)(&array->data), nbytes));
     CudaChecked(cudaMalloc((void **)(&array->device_data), nbytes));
@@ -209,20 +214,26 @@ void transferDataObject(cudaMemcpyKind kind, T *obj, size_t size = 0,
   }
 }
 
+#define prepareDataObject(NAME, ...) _prepareDataObject(NAME, STRINGIFY(NAME), __VA_ARGS__);
 template <typename T>
-void prepareDataObject(T *obj, size_t size, bool copyIn = true,
+void _prepareDataObject(T *obj, const char *name, size_t size, bool copyIn = true,
                        cudaStream_t stream = nullptr) {
+  int device = 0;                                                            
+  cudaGetDevice(&device);
   if (!_cudaPtrIsManaged(obj->data)) {
     if (obj->device_data == nullptr) {
+      debug_printf("allocating %llu bytes for %s on device %d\n", size, name, device);
       CudaChecked(cudaMalloc((void **)&obj->device_data, size));
       obj->operator_allocated = 1;
     }
     transferDataObject(cudaMemcpyHostToDevice, obj, size, copyIn, stream);
   }
 }
+#define destroyDataObject(NAME, ...) _destroyDataObject(NAME, STRINGIFY(NAME), __VA_ARGS__);
 
-template <typename T> void destroyDataObject(T *obj, bool del = true) {
+template <typename T> void _destroyDataObject(T *obj, const char *name, bool del = true) {
   if (del && obj->operator_allocated) {
+    debug_printf("freeing %s\n", name);
     CudaChecked(cudaFree(obj->device_data));
     obj->device_data = nullptr;
   }

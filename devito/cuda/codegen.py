@@ -37,7 +37,7 @@ class CudaCGen(CGen):
         ret = []
         for i in filter_sorted(args):
             is_const = i not in callable.writes
-            const_str = " const " if is_const else ""
+            const_str = " const __restrict " if is_const else ""
             # NB: not using __restrict here as nvcc sometimes produces worse
             # code with it.
             # we declare all pointers as:

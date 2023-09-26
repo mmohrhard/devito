@@ -139,7 +139,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                                                     allocator=self._allocator,
                                                     distributor=self._distributor)
 
-                    if self._device_allocator:
+                    if self._device_allocator is not None:
                         with nvtx.annotate("device"):
                             debug("Allocating device memory for %s%s [%s]" % (self.name, self.shape_allocated, humanbytes(self.nbytes)))
                             self._device_data, self._device_data_alloc_args = self._device_allocator.alloc(self.shape_allocated, self.dtype)
@@ -783,9 +783,9 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         """
         dataobj = byref(self._C_ctype._type_())
         dataobj._obj.data = data.ctypes.data_as(c_restrict_void_p)
-        dataobj._obj.device_data = device_data.ctypes.data_as(c_restrict_void_p) if device_data is not None else c_restrict_void_p(0)
+        dataobj._obj.device_data = device_data.ctypes.data_as(c_restrict_void_p) if device_data is not None else self._device_data_ptr
         dataobj._obj.device_accessible = 0 # TODO: figure out how to set this properly
-        dataobj._obj.operator_allocated = 1 if dataobj._obj.device_data == c_restrict_void_p(0) else 0
+        dataobj._obj.operator_allocated = 1 if self._device_allocator is None else 0
         dataobj._obj.size = (c_ulong*self.ndim)(*data.shape)
         # MPI-related fields
         dataobj._obj.npsize = (c_ulong*self.ndim)(*[i - sum(j) for i, j in
@@ -1023,14 +1023,22 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     def _arg_finalize(self, args, alias=None):
         key = alias or self
         
-        if self._device_allocator:
-            if self._device_data is None or self._device_data.shape != args[key.name].shape:
-                self._device_data = None
-                (self._device_data, self._device_data_alloc_args) = self._device_allocator.alloc(args[key.name].shape, self.dtype)
-        else:
+        if self._device_allocator is not None and (
+            self._device_data is None 
+            or self._device_data.shape != args[key.name].shape
+        ):
+            # Make sure that the device allocation matches the size expected
             self._device_data = None
+            (self._device_data, self._device_data_alloc_args) = self._device_allocator.alloc(args[key.name].shape, self.dtype)
+            self._device_data_ptr = self._device_data.ctypes.data_as(c_restrict_void_p)
 
         return {key.name: self._C_make_dataobj(args[key.name], self._device_data)}
+    
+    def _arg_apply(self, dataobj, alias=None):
+        key = alias or self
+
+        # Capture the device data pointer (if any) for reuse
+        key._device_data_ptr = c_restrict_void_p(dataobj._obj.device_data.value)
 
 class Function(DiscreteFunction):
 

@@ -20,7 +20,7 @@ def kernel_tuning(iet, **kwargs):
     unique = []
     non_unique = []
     for k, v in grouped.items():
-        if len(v) == 1 or len(set([x.template_arguments for x in v])) == 1:
+        if len(v) == 1 or len(set(flatten([x.template_arguments for x in v]))) == 1:
             unique += v
         else:
             non_unique += v

@@ -1,6 +1,8 @@
 import abc
+from enum import Enum
 from functools import reduce
 from operator import mul
+from typing import Optional
 import mmap
 import os
 import sys
@@ -15,7 +17,7 @@ from devito.tools import dtype_to_ctype, humanbytes
 __all__ = ['ALLOC_FLAT', 'ALLOC_NUMA_LOCAL', 'ALLOC_NUMA_ANY',
            'ALLOC_KNL_MCDRAM', 'ALLOC_KNL_DRAM', 'ALLOC_GUARD',
            'ALLOC_CUDA_DEVICE', 'ALLOC_CUDA_SHARED', 'ALLOC_CUDA_HOST',
-           'default_allocator']
+           'default_allocator', 'CudaAllocator', 'CudaAllocationType']
 
 
 class MemoryAllocator(object):
@@ -364,6 +366,16 @@ class ExternalAllocator(MemoryAllocator):
 
         return (self.numpy_array, None)
 
+CUDA_MEM_ATTACH_GLOBAL = 0x1
+
+CUDA_HOST_ALLOC_DEFAULT = 0x0
+CUDA_HOST_ALLOC_PORTABLE = 0x1
+
+class CudaAllocationType(Enum):
+    HOST = 1
+    DEVICE = 2
+    SHARED = 3
+
 class CudaAllocator(MemoryAllocator):
 
     """
@@ -374,9 +386,11 @@ class CudaAllocator(MemoryAllocator):
     type : 'host', 'device', or 'shared' (default 'host')
         Where to allocate memory for this allocator.
 
-        Host allocations are in page-locked memory and are visible to all GPUs on the system.
+        Host allocations are in page-locked memory and are visible to all
+        GPUs on the system.
 
-        Shared allocations are manged USM allocations and are visible to all GPUs on the system.
+        Shared allocations are manged USM allocations and are visible to all
+        GPUs on the system.
 
         Device allocations are specific to an individual GPU.
 
@@ -385,12 +399,14 @@ class CudaAllocator(MemoryAllocator):
 
     Notes
     ------
-    * If device_number is not specified, device allocations will go to the default
-      device (typically device 0 unless CUDA environment variables are set to override it)
+    * If device_number is not specified, device allocations will go to the current
+      device when an allocation is attempted (typically device 0 unless CUDA
+      environment variables are set to override it or cudaSetDevice() has been called)
     """
+
     @classmethod
     def initialize(cls):
-        handle = 'libcudart.so'
+        handle = "libcudart.so"
 
         try:
             cls.lib = ctypes.CDLL(handle)
@@ -404,47 +420,57 @@ class CudaAllocator(MemoryAllocator):
         except OSError:
             cls.lib = None
 
-    def __init__(self, type='host', device=None):
+    def __init__(self, type: CudaAllocationType = CudaAllocationType.HOST, device: Optional[int] = None):
         self.type = type
         self.device = device
 
     def _alloc_C_libcall(self, size, ctype):
         if not self.available():
-            raise RuntimeError("Couldn't find `libcuda`'s `cudaMallocHost` to "
-                               "allocate memory")
+            raise RuntimeError(
+                "Couldn't find `libcuda`'s `cudaMallocHost` to allocate memory"
+            )
 
         # switch device if necessary
-        if self.device and self.type == "device":
+        if self.device is not None and self.type in [CudaAllocationType.DEVICE, CudaAllocationType.SHARED]:
             saved_device = self._current_device()
             if self.device != saved_device.value:
-                logger.info(f"switching from device {saved_device.value} to device {self.device} for allocation of size {humanbytes(size * ctypes.sizeof(ctype))}")
+                logger.info(
+                    f"switching from device {saved_device.value} to device {self.device}"
+                    f" for allocation of size {humanbytes(size * ctypes.sizeof(ctype))}"
+                )
                 self._set_cuda_device(self.device)
 
         c_bytesize = ctypes.c_ulong(max(1, size) * ctypes.sizeof(ctype))
 
         c_pointer = ctypes.cast(ctypes.c_void_p(), ctypes.c_void_p)
 
-        if self.type == 'host':
-            ret = self.lib.cudaHostAlloc(ctypes.byref(c_pointer), c_bytesize, 0x1) # cudaHostAllocPortable
-        elif self.type == 'device':
+        if self.type == CudaAllocationType.HOST:
+            ret = self.lib.cudaHostAlloc(
+                ctypes.byref(c_pointer), c_bytesize, CUDA_HOST_ALLOC_PORTABLE
+            )
+        elif self.type == CudaAllocationType.DEVICE:
             ret = self.lib.cudaMalloc(ctypes.byref(c_pointer), c_bytesize)
-        elif self.type == 'shared':
-            ret = self.lib.cudaMallocManaged(ctypes.byref(c_pointer), c_bytesize, 0x1) #cudaMemAttachGlobal
+        elif self.type == CudaAllocationType.SHARED:
+            ret = self.lib.cudaMallocManaged(
+                ctypes.byref(c_pointer), c_bytesize, CUDA_MEM_ATTACH_GLOBAL
+            ) 
         else:
             raise RuntimeError(f"Invalid CUDA allocation type '{self.type}'")
 
         if ret == 0:
-            if self.device and self.device != saved_device.value:
+            if self.device is not None and self.device != saved_device.value:
                 self._set_device(saved_device)
 
             return c_pointer, (c_pointer, c_bytesize, self.type)
         else:
-            self._throw_cuda_error(f"allocating {humanbytes(c_bytesize.value)} of {self.type} memory")
+            self._throw_cuda_error(
+                f"allocating {humanbytes(c_bytesize.value)} of {self.type} memory"
+            )
 
     def free(self, c_pointer, c_bytesize, type):
-        if type == 'host':
+        if type == CudaAllocationType.HOST:
             ret = self.lib.cudaFreeHost(c_pointer)
-        elif type in ['device', 'shared']:
+        elif type in (CudaAllocationType.DEVICE, CudaAllocationType.SHARED):
             ret = self.lib.cudaFree(c_pointer)
         else:
             raise RuntimeError(f"invalid CUDA allocation type {type}")
@@ -454,9 +480,11 @@ class CudaAllocator(MemoryAllocator):
 
     def _throw_cuda_error(self, msg):
         err = self.lib.cudaGetLastError()
-        logger.error(f"CUDA error {msg}: {self.lib.cudaGetErrorName(err).decode()} - {self.lib.cudaGetErrorString(err).decode()}")
-        
-        sys.exit(1)
+        err_string = f"CUDA error {msg}: {self.lib.cudaGetErrorName(err).decode()}" \
+                     f" - {self.lib.cudaGetErrorString(err).decode()}"
+        logger.error(err_string)
+
+        raise RuntimeError(err_string)
 
     def _current_device(self):
         c_device = ctypes.c_int32(-1)
@@ -487,9 +515,9 @@ ALLOC_KNL_DRAM = NumaAllocator(0)
 ALLOC_KNL_MCDRAM = NumaAllocator(1)
 ALLOC_NUMA_ANY = NumaAllocator('any')
 ALLOC_NUMA_LOCAL = NumaAllocator('local')
-ALLOC_CUDA_DEVICE = CudaAllocator('device')
-ALLOC_CUDA_SHARED = CudaAllocator('shared')
-ALLOC_CUDA_HOST = CudaAllocator('host')
+ALLOC_CUDA_DEVICE = CudaAllocator(CudaAllocationType.DEVICE)
+ALLOC_CUDA_SHARED = CudaAllocator(CudaAllocationType.SHARED)
+ALLOC_CUDA_HOST = CudaAllocator(CudaAllocationType.HOST)
 
 custom_allocators = {}
 """User-defined allocators."""
@@ -539,7 +567,6 @@ def default_allocator(name=None):
     """
     if name is not None:
         try:
-            print ("using " + name + "\n")
             return custom_allocators[name]
         except KeyError:
             pass
@@ -553,7 +580,7 @@ def default_allocator(name=None):
         return ALLOC_CUDA_HOST
 
     if NumaAllocator.available():
-        if not is_knl and infer_knl_mode() == 'flat':
+        if is_knl and infer_knl_mode() == "flat":
             return ALLOC_KNL_MCDRAM
         else:
             return ALLOC_NUMA_LOCAL

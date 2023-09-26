@@ -14,6 +14,7 @@ from devito.symbolics import (INT, FLOOR, cast_mapper, indexify,
                               retrieve_function_carriers)
 from devito.tools import (ReducerMap, as_tuple, flatten, prod, filter_ordered,
                           memoized_meth, is_integer)
+from devito.tools.utils import c_restrict_void_p
 from devito.types.dense import DiscreteFunction, Function, SubFunction
 from devito.types.dimension import (Dimension, ConditionalDimension, DefaultDimension,
                                     DynamicDimension)
@@ -286,6 +287,8 @@ class AbstractSparseFunction(DiscreteFunction):
         elif self.grid.distributor.nprocs > 1:
             raise NotImplementedError("Don't know how to gather data from an "
                                       "object of type `%s`" % type(key))
+        
+        key._device_data_ptr = c_restrict_void_p(dataobj._obj.device_data.value)
 
 
 class AbstractSparseTimeFunction(AbstractSparseFunction):
@@ -980,7 +983,7 @@ class PrecomputedSparseFunction(AbstractSparseFunction):
 
     def _arg_apply(self, *args, **kwargs):
         distributor = self.grid.distributor
-
+    
         # If not using MPI, don't waste time
         if distributor.nprocs == 1:
             return
@@ -1330,7 +1333,7 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             space_order=0,
             parent=self,
             allocator=self._allocator,
-            device_allocator=self._device_allocator,
+            device_allocator=self._device_allocator
         )
         self._par_dim_to_nnz_m = SubFunction(
             name='par_dim_to_nnz_m_%s' % self.name,
@@ -1493,7 +1496,7 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
 
         return [Eq(self, 0), Inc(lhs, rhs)]
 
-    def inject(self, field, expr, offset=0, u_t=None, p_t=None, name=None):
+    def inject(self, field, expr, offset=0, u_t=None, p_t=None):
         """Symbol for injection of an expression onto a grid
 
         :param field: The grid field into which we inject.
@@ -2062,6 +2065,8 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
         elif self.grid.distributor.nprocs > 1:
             raise NotImplementedError("Don't know how to gather data from an "
                                       "object of type `%s`" % type(key))
+        
+        key._device_data_ptr = c_restrict_void_p(dataobj._obj.device_data.value)
 
     def manual_gather(self):
         # data, in this case, is set to whatever dist_scatter provided?
