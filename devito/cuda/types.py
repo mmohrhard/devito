@@ -2,7 +2,7 @@ import ctypes
 from devito.types import Scalar, Global
 from devito.symbolics.extended_sympy import ReservedWord
 
-__all__ = ['CudaEvent', 'CudaStream', 'NullPointer', 'JitifyCache', 'JitifyProgram']
+__all__ = ["CudaEvent", "CudaStream", "NullPointer", "JitifyCache", "JitifyProgram"]
 
 
 class cudaEvent_t(ctypes.Structure):
@@ -17,7 +17,6 @@ c_cudaEvent_p = ctypes.POINTER(cudaEvent_t)
 
 
 class CudaEvent(Scalar):
-
     def __init__(self, name):
         super().__init__(name=name, dtype=ctypes.c_void_p)
 

@@ -5,9 +5,17 @@ from devito.data import FULL
 from devito.tools.utils import as_tuple, filter_ordered, flatten
 
 from devito.ir.iet.nodes import (
-    Call, CallableBody, DeviceCall, DeviceFunction,
-    Expression, ExprStmt, Node, Global,
-    Definition, Transfer, CLiteral
+    Call,
+    CallableBody,
+    DeviceCall,
+    DeviceFunction,
+    Expression,
+    ExprStmt,
+    Node,
+    Global,
+    Definition,
+    Transfer,
+    CLiteral,
 )
 
 from devito.ir.iet.efunc import AsyncCall, AsyncCallable
@@ -18,17 +26,37 @@ from devito.cuda.types import CudaStream
 
 import ctypes as c
 
-__all__ = ['CudaCall', 'CudaCallable', 'CudaCallableBody', 'CudaTransferDirection',
-           'CudaConstantWrite', 'CudaConstantDecl', 'CudaKernelPointerCast',
-           'TemplateParameter', 'CudaKernelTuner', 'CudaTunedKernel']
+__all__ = [
+    "CudaCall",
+    "CudaCallable",
+    "CudaCallableBody",
+    "CudaTransferDirection",
+    "CudaConstantWrite",
+    "CudaConstantDecl",
+    "CudaKernelPointerCast",
+    "TemplateParameter",
+    "CudaKernelTuner",
+    "CudaTunedKernel",
+]
 
 
 class CudaCall(DeviceCall):
     is_Call = True
 
-    def __init__(self, name=None, grid=None, threads=None, preferred_block=None,
-                 preferred_sub_block=None, template_arguments=None,
-                 arguments=None, kernel=None, writes=None, types=None, stream=None):
+    def __init__(
+        self,
+        name=None,
+        grid=None,
+        threads=None,
+        preferred_block=None,
+        preferred_sub_block=None,
+        template_arguments=None,
+        arguments=None,
+        kernel=None,
+        writes=None,
+        types=None,
+        stream=None,
+    ):
         super().__init__(name, arguments, None, writes=writes, types=types)
         self._grid = grid
         self._threads = threads
@@ -68,59 +96,119 @@ class CudaCall(DeviceCall):
 
 
 class CudaCallableBody(CallableBody):
-    _traversable = ['unpacks', 'casts', 'init', 'allocs', 'maps', 'objs',
-                    'body', 'unmaps', 'frees']
+    _traversable = [
+        "unpacks",
+        "casts",
+        "init",
+        "allocs",
+        "maps",
+        "objs",
+        "body",
+        "unmaps",
+        "frees",
+    ]
 
-    def __init__(self, body, init=None, unpacks=None, allocs=None, casts=None,
-                 objs=None, maps=None, unmaps=None, frees=None, fini=None):
-        super().__init__(body, init, unpacks, allocs, casts, objs,
-                         maps, unmaps, frees, fini)
+    def __init__(
+        self,
+        body,
+        init=None,
+        unpacks=None,
+        allocs=None,
+        casts=None,
+        objs=None,
+        maps=None,
+        unmaps=None,
+        frees=None,
+        fini=None,
+    ):
+        super().__init__(
+            body, init, unpacks, allocs, casts, objs, maps, unmaps, frees, fini
+        )
 
     def __repr__(self):
-        return ("<CudaCallableBody <unpacks=%d, allocs=%d, casts=%d, maps=%d, "
-                "objs=%d> <unmaps=%d, frees=%d>>" %
-                (len(self.unpacks), len(self.allocs), len(self.casts),
-                 len(self.maps), len(self.objs), len(self.unmaps),
-                 len(self.frees)))
+        return (
+            "<CudaCallableBody <unpacks=%d, allocs=%d, casts=%d, maps=%d, "
+            "objs=%d> <unmaps=%d, frees=%d>>"
+            % (
+                len(self.unpacks),
+                len(self.allocs),
+                len(self.casts),
+                len(self.maps),
+                len(self.objs),
+                len(self.unmaps),
+                len(self.frees),
+            )
+        )
 
     @property
     def used_globals(self):
         from devito.ir.iet.visitors import FindNodes
+
         return filter_ordered(FindNodes(Global).visit(self.body))
 
 
 class CudaCallable(DeviceFunction):
     is_Callable = True
 
-    _traversable = ['body']
+    _traversable = ["body"]
 
     _defines = None
 
-    def __init__(self, name=None, body=None, parameters=None, defines=None,
-                 template_parameters=None, preferred_block=None,
-                 preferred_sub_block=None, block_dims=None):
+    def __init__(
+        self,
+        name=None,
+        body=None,
+        parameters=None,
+        defines=None,
+        template_parameters=None,
+        preferred_block=None,
+        preferred_sub_block=None,
+        block_dims=None,
+    ):
         if isinstance(body, CallableBody):
-            super().__init__(name, CudaCallableBody(body.body, body.init,
-                                                    body.unpacks, body.allocs,
-                                                    body.casts, body.objs,
-                                                    body.maps, body.unmaps,
-                                                    body.frees, body.fini),
-                             'void', parameters=parameters, prefix='__global__')
+            super().__init__(
+                name,
+                CudaCallableBody(
+                    body.body,
+                    body.init,
+                    body.unpacks,
+                    body.allocs,
+                    body.casts,
+                    body.objs,
+                    body.maps,
+                    body.unmaps,
+                    body.frees,
+                    body.fini,
+                ),
+                "void",
+                parameters=parameters,
+                prefix="__global__",
+            )
         else:
-            super().__init__(name, CudaCallableBody(body), 'void', parameters=parameters,
-                             prefix='__global__')
+            super().__init__(
+                name,
+                CudaCallableBody(body),
+                "void",
+                parameters=parameters,
+                prefix="__global__",
+            )
         self._defines = defines
         self._template_parameters = template_parameters or []
         self._preferred_block = preferred_block or (64,)
-        self._preferred_sub_block = (preferred_sub_block
-                                     or as_tuple([1] * len(self._preferred_block)))
+        self._preferred_sub_block = preferred_sub_block or as_tuple(
+            [1] * len(self._preferred_block)
+        )
 
     @property
     def template_parameters(self):
-        return filter_ordered(flatten(self.block_parameters
-                                      + self.sub_block_parameters
-                                      + [x.free_symbols for x in self.body.casts]
-                                      + self._template_parameters))
+        return filter_ordered(
+            flatten(
+                self.block_parameters
+                + self.sub_block_parameters
+                + [x.free_symbols for x in self.body.casts]
+                + self._template_parameters
+            )
+        )
 
     @property
     def preferred_block(self):
@@ -140,15 +228,19 @@ class CudaCallable(DeviceFunction):
 
     @property
     def block_arguments(self):
-        dims = ['x', 'y', 'z']
-        return [DummyEq(TemplateParameter(f"_block_{d[1]}"), d[0])
-                for d in zip(self._preferred_block, dims)]
+        dims = ["x", "y", "z"]
+        return [
+            DummyEq(TemplateParameter(f"_block_{d[1]}"), d[0])
+            for d in zip(self._preferred_block, dims)
+        ]
 
     @property
     def sub_block_arguments(self):
-        dims = ['x', 'y', 'z']
-        return [DummyEq(TemplateParameter(f"_sub_block_{d[1]}"), d[0])
-                for d in zip(self._preferred_sub_block, dims)]
+        dims = ["x", "y", "z"]
+        return [
+            DummyEq(TemplateParameter(f"_sub_block_{d[1]}"), d[0])
+            for d in zip(self._preferred_sub_block, dims)
+        ]
 
     @property
     def template_arguments(self):
@@ -156,16 +248,19 @@ class CudaCallable(DeviceFunction):
 
     @property
     def defines(self):
-        return [x for x in flatten([self.parameters,
-                                    self._defines,
-                                    self._template_parameters]) if x]
+        return [
+            x
+            for x in flatten([self.parameters, self._defines, self._template_parameters])
+            if x
+        ]
 
     @cached_property
     def writes(self):
         from devito.ir.iet.visitors import FindNodes
-        return filter_ordered(flatten(
-            [x.write for x in FindNodes(Expression).visit(self)]
-        ))
+
+        return filter_ordered(
+            flatten([x.write for x in FindNodes(Expression).visit(self)])
+        )
 
 
 class CudaConstantWrite(Expression):
@@ -231,8 +326,10 @@ class CudaKernelPointerCast(ExprStmt, Node):
         else:
             calc = lambda x: self.function._C_get_field(FULL, x).size
 
-        return tuple(DummyEq(TemplateParameter('%s_sz_%s' % (self.function.name, d.name)),
-                             calc(d)) for d in self.function.dimensions[1:])
+        return tuple(
+            DummyEq(TemplateParameter("%s_sz_%s" % (self.function.name, d.name)), calc(d))
+            for d in self.function.dimensions[1:]
+        )
 
     @property
     def functions(self):
@@ -255,6 +352,7 @@ class CudaTunedKernel(Scalar):
     """
     A symbol containing a tuned CUDA kernel ready for execution.
     """
+
     def __init__(cls, name):
         super().__init__(name=name, dtype=c.c_void_p)
 
@@ -272,7 +370,7 @@ class CudaKernelTuner(ExprStmt, Node):
         self._output_kernel = output_kernel
 
     def __repr__(self):
-        return "<CudaKernelTuner(%s)>" % 'a'
+        return "<CudaKernelTuner(%s)>" % "a"
 
     @property
     def defines(self):
@@ -330,13 +428,16 @@ class CudaStorage:
 
     @cached_property
     def operator_allocated(self):
-        return "%s->%s" % (self.function._C_name,
-                           self.function._C_field_operator_allocated)
+        return "%s->%s" % (
+            self.function._C_name,
+            self.function._C_field_operator_allocated,
+        )
 
     @cached_property
     def size(self):
-        return (('sizeof(%s) * ' % (self.function.indexed._C_typedata))
-                + ' * '.join("(" + ccode(j) + ")" for i, j in self.sections))
+        return ("sizeof(%s) * " % (self.function.indexed._C_typedata)) + " * ".join(
+            "(" + ccode(j) + ")" for i, j in self.sections
+        )
 
     @property
     def imask(self):
@@ -349,6 +450,7 @@ class CudaStorage:
     @cached_property
     def sections(self):
         from devito.passes.iet.langbase import make_sections_from_imask
+
         return make_sections_from_imask(self.function, self.imask)
 
 
@@ -357,8 +459,15 @@ class CudaTransfer(CudaStorage, Transfer, Node):
     A data transfer between host and CUDA device.
     """
 
-    def __init__(self, function, imask=None, condition=None,
-                 direction=CudaTransferDirection.H2D, delete=None, stream=None):
+    def __init__(
+        self,
+        function,
+        imask=None,
+        condition=None,
+        direction=CudaTransferDirection.H2D,
+        delete=None,
+        stream=None,
+    ):
         super().__init__(function, imask)
 
         self._direction = direction
@@ -439,9 +548,11 @@ class CudaDealloc(CudaStorage, Node):
 
 class CudaCheckError(CLiteral):
     def __init__(self):
-        super().__init__('if (cudaPeekAtLastError() != 0 ) { cudaError_t err '
-                         '= cudaGetLastError(); printf("\\n!E %s: %s\\n",'
-                         'cudaGetErrorName(err), cudaGetErrorString(err));}')
+        super().__init__(
+            "if (cudaPeekAtLastError() != 0 ) { cudaError_t err "
+            '= cudaGetLastError(); printf("\\n!E %s: %s\\n",'
+            "cudaGetErrorName(err), cudaGetErrorString(err));}"
+        )
 
 
 class CudaChecked(Call):
@@ -459,11 +570,28 @@ class CudaAtomicExpression(Expression):
 
 
 class CudaHostFuncCall(AsyncCall):
-    def __init__(self, name, arguments=None, retobj=None, is_indirect=False,
-                 cast=False, writes=None, types=None, declares=True, stream=None):
-        super().__init__(name, arguments=arguments, retobj=retobj,
-                         is_indirect=is_indirect, cast=cast, writes=writes,
-                         types=types, declares=declares)
+    def __init__(
+        self,
+        name,
+        arguments=None,
+        retobj=None,
+        is_indirect=False,
+        cast=False,
+        writes=None,
+        types=None,
+        declares=True,
+        stream=None,
+    ):
+        super().__init__(
+            name,
+            arguments=arguments,
+            retobj=retobj,
+            is_indirect=is_indirect,
+            cast=cast,
+            writes=writes,
+            types=types,
+            declares=declares,
+        )
         self.stream = stream
 
 

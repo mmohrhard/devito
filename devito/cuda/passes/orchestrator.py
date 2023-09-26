@@ -8,17 +8,28 @@ from devito.ir.iet.efunc import EntryFunction
 from devito.ir.iet.nodes import BlankLine, Call, Callable, Definition, List, SyncSpot
 from devito.ir.iet.utils import derive_parameters
 from devito.ir.iet.visitors import FindNodes, Transformer, Uxreplace
-from devito.ir.support.syncs import (FetchUpdate, PrefetchUpdate, ReleaseLock,
-                                     WaitLock, WithLock)
+from devito.ir.support.syncs import (
+    FetchUpdate,
+    PrefetchUpdate,
+    ReleaseLock,
+    WaitLock,
+    WithLock,
+)
 from devito.passes.iet.engine import iet_pass
 from devito.passes.iet.orchestration import Orchestrator
 from devito.tools.utils import as_mapper, filter_ordered
 
 from devito.cuda.lang import CudaBB
-from devito.cuda.nodes import (CudaChecked, CudaHostFuncCall, CudaHostFuncCallable,
-                               HostStream, KernelStream, MemCopyStream)
+from devito.cuda.nodes import (
+    CudaChecked,
+    CudaHostFuncCall,
+    CudaHostFuncCallable,
+    HostStream,
+    KernelStream,
+    MemCopyStream,
+)
 
-__all__ = ['CudaOrchestrator']
+__all__ = ["CudaOrchestrator"]
 
 
 class CudaOrchestrator(Orchestrator):
@@ -30,12 +41,15 @@ class CudaOrchestrator(Orchestrator):
 
     def _make_waitlock(self, iet, sync_ops):
         waitloop = List(
-            header=c.Comment("Wait for `%s` to be copied to the host" %
-                             ",".join(s.function.name for s in sync_ops)),
-            body=[self.lang._map_wait_recreate_event(s,
-                                                     stream=self._kernel_stream)
-                  for s in sync_ops],
-            footer=c.Line()
+            header=c.Comment(
+                "Wait for `%s` to be copied to the host"
+                % ",".join(s.function.name for s in sync_ops)
+            ),
+            body=[
+                self.lang._map_wait_recreate_event(s, stream=self._kernel_stream)
+                for s in sync_ops
+            ],
+            footer=c.Line(),
         )
 
         iet = List(body=(waitloop,) + iet.body)
@@ -43,103 +57,120 @@ class CudaOrchestrator(Orchestrator):
         return iet, []
 
     def _make_withlock(self, iet, sync_ops):
-        preactions = [c.Comment("Block the copy until it's safe"),
-                      BlankLine]
+        preactions = [c.Comment("Block the copy until it's safe"), BlankLine]
 
         # the main kernel stream should mark this as the appropriate place for it to start
-        preactions.extend([self.lang._map_fire_event(s, stream=self._kernel_stream)
-                           for s in sync_ops])
+        preactions.extend(
+            [self.lang._map_fire_event(s, stream=self._kernel_stream) for s in sync_ops]
+        )
         # these should run on the memcpy stream, so it needs to wait
-        preactions.extend([self.lang._map_wait_event(s, stream=self._memcpy_stream)
-                           for s in sync_ops])
+        preactions.extend(
+            [self.lang._map_wait_event(s, stream=self._memcpy_stream) for s in sync_ops]
+        )
 
         # then recreate the event
         preactions.extend([self.lang._map_recreate_event(s) for s in sync_ops])
-        preactions.extend([self.lang._map_update_host_async(s.function,
-                                                            qid=self._memcpy_stream)
-                           for s in sync_ops])
-        preactions.extend([self.lang._map_fire_event(s, stream=self._memcpy_stream)
-                           for s in sync_ops])
+        preactions.extend(
+            [
+                self.lang._map_update_host_async(s.function, qid=self._memcpy_stream)
+                for s in sync_ops
+            ]
+        )
+        preactions.extend(
+            [self.lang._map_fire_event(s, stream=self._memcpy_stream) for s in sync_ops]
+        )
 
         # these should run on the host stream (not default stream)
-        preactions.extend([self.lang._map_wait_recreate_event(s, stream=self._host_stream)
-                           for s in sync_ops])
+        preactions.extend(
+            [
+                self.lang._map_wait_recreate_event(s, stream=self._host_stream)
+                for s in sync_ops
+            ]
+        )
         postactions = [BlankLine, c.Comment("Raise the event")]
-        postactions.extend([self.lang._map_fire_event(s, stream=self._host_stream)
-                            for s in sync_ops])
+        postactions.extend(
+            [self.lang._map_fire_event(s, stream=self._host_stream) for s in sync_ops]
+        )
 
         # Turn `iet` into an AsyncCallable so that subsequent passes know
         # that we're happy for this Callable to be executed asynchronously
-        name = self.sregistry.make_name(prefix='copy_device_to_host')
+        name = self.sregistry.make_name(prefix="copy_device_to_host")
         async_body = List(body=iet.body)
         parameters = cuda_derive_parameters(async_body)
         async_body = async_body._rebuild()
         efunc = CudaHostFuncCallable(name, async_body, parameters=parameters)
 
         # The corresponding AsyncCall
-        body = (preactions + [CudaHostFuncCall(name,
-                                               efunc.parameters,
-                                               stream=self._host_stream)]
-                + postactions)
+        body = (
+            preactions
+            + [CudaHostFuncCall(name, efunc.parameters, stream=self._host_stream)]
+            + postactions
+        )
 
         iet = List(body=body)
 
         return iet, [efunc]
 
     def _make_fetchupdate(self, iet, sync_ops):
-        postactions = [self.lang._map_update_device(s.target, s.imask)
-                       for s in sync_ops]
+        postactions = [self.lang._map_update_device(s.target, s.imask) for s in sync_ops]
 
         # Turn init IET into a Callable
-        name = self.sregistry.make_name(prefix='init_device')
+        name = self.sregistry.make_name(prefix="init_device")
         body = List(body=iet.body + tuple(postactions))
         parameters = derive_parameters(body)
-        efunc = Callable(name, body, 'void', parameters, 'static')
+        efunc = Callable(name, body, "void", parameters, "static")
 
         # Perform initial fetch by the main thread
         iet = List(
-            header=c.Comment("Initialize data stream"),
-            body=Call(name, parameters)
+            header=c.Comment("Initialize data stream"), body=Call(name, parameters)
         )
 
         return iet, [efunc]
 
     def _make_prefetchupdate(self, iet, sync_ops):
         preactions = []
-        preactions.extend([self.lang._map_wait_event(s, stream=self._host_stream)
-                           for s in sync_ops])
-        preactions.extend([self.lang._map_fire_event(s, stream=self._kernel_stream)
-                           for s in sync_ops])
-        preactions.extend([self.lang._map_recreate_event(s)
-                           for s in sync_ops])
+        preactions.extend(
+            [self.lang._map_wait_event(s, stream=self._host_stream) for s in sync_ops]
+        )
+        preactions.extend(
+            [self.lang._map_fire_event(s, stream=self._kernel_stream) for s in sync_ops]
+        )
+        preactions.extend([self.lang._map_recreate_event(s) for s in sync_ops])
 
         postactions = []
-        postactions.extend([self.lang._map_fire_event(s, stream=self._host_stream)
-                            for s in sync_ops])
-        postactions.extend([
-            self.lang._map_wait_recreate_event(s, stream=self._memcpy_stream)
-            for s in sync_ops])
-        postactions.extend([
-            self.lang._map_update_device_async(s.target, qid=self._memcpy_stream)
-            for s in sync_ops])
-        postactions.extend([
-            self.lang._map_fire_event(s, stream=self._memcpy_stream)
-            for s in sync_ops])
+        postactions.extend(
+            [self.lang._map_fire_event(s, stream=self._host_stream) for s in sync_ops]
+        )
+        postactions.extend(
+            [
+                self.lang._map_wait_recreate_event(s, stream=self._memcpy_stream)
+                for s in sync_ops
+            ]
+        )
+        postactions.extend(
+            [
+                self.lang._map_update_device_async(s.target, qid=self._memcpy_stream)
+                for s in sync_ops
+            ]
+        )
+        postactions.extend(
+            [self.lang._map_fire_event(s, stream=self._memcpy_stream) for s in sync_ops]
+        )
 
         # Turn `iet` into an AsyncCallable so that subsequent passes know
         # that we're happy for this Callable to be executed asynchronously
-        name = self.sregistry.make_name(prefix='prefetch_host_to_device')
+        name = self.sregistry.make_name(prefix="prefetch_host_to_device")
         body = iet.body
 
         parameters = cuda_derive_parameters(body)
         efunc = CudaHostFuncCallable(name, body, parameters=parameters)
 
         # The corresponding AsyncCall
-        iet = List(body=preactions
-                   + [CudaHostFuncCall(name,
-                                       efunc.parameters,
-                                       stream=self._host_stream)]
-                   + postactions)
+        iet = List(
+            body=preactions
+            + [CudaHostFuncCall(name, efunc.parameters, stream=self._host_stream)]
+            + postactions
+        )
 
         return iet, [efunc]
 
@@ -172,20 +203,27 @@ class CudaOrchestrator(Orchestrator):
         if not sync_spots:
             if isinstance(iet, EntryFunction):
                 # yuck
-                iet = iet._rebuild(body=List(body=[
-                    iet.body,
-                    CudaChecked(Call("cudaStreamSynchronize", KernelStream())),
-                    CudaChecked(Call("cudaStreamSynchronize", MemCopyStream())),
-                    CudaChecked(Call("cudaStreamSynchronize", HostStream()))]))
+                iet = iet._rebuild(
+                    body=List(
+                        body=[
+                            iet.body,
+                            CudaChecked(Call("cudaStreamSynchronize", KernelStream())),
+                            CudaChecked(Call("cudaStreamSynchronize", MemCopyStream())),
+                            CudaChecked(Call("cudaStreamSynchronize", HostStream())),
+                        ]
+                    )
+                )
             return iet, {}
 
-        callbacks = OrderedDict([
-            (WithLock, self._make_withlock),
-            (WaitLock, self._make_waitlock),
-            (FetchUpdate, self._make_fetchupdate),
-            (PrefetchUpdate, self._make_prefetchupdate),
-            (ReleaseLock, self._nop)
-        ])
+        callbacks = OrderedDict(
+            [
+                (WithLock, self._make_withlock),
+                (WaitLock, self._make_waitlock),
+                (FetchUpdate, self._make_fetchupdate),
+                (PrefetchUpdate, self._make_prefetchupdate),
+                (ReleaseLock, self._nop),
+            ]
+        )
 
         # The SyncOps are to be processed in a given order
         key = lambda s: list(callbacks).index(s)
@@ -202,14 +240,25 @@ class CudaOrchestrator(Orchestrator):
 
         iet = Transformer(subs).visit(iet)
 
-        events = [List(body=[Definition(e, None, None, NullPointer()),
-                             self.lang.mapper['create-event'](e._C_symbol),
-                             ]) for e in filter_ordered(events)]
-        iet = iet._rebuild(body=List(body=[
-            events,
-            iet.body,
-            CudaChecked(Call("cudaStreamSynchronize", KernelStream())),
-            CudaChecked(Call("cudaStreamSynchronize", MemCopyStream())),
-            CudaChecked(Call("cudaStreamSynchronize", HostStream()))]))
+        events = [
+            List(
+                body=[
+                    Definition(e, None, None, NullPointer()),
+                    self.lang.mapper["create-event"](e._C_symbol),
+                ]
+            )
+            for e in filter_ordered(events)
+        ]
+        iet = iet._rebuild(
+            body=List(
+                body=[
+                    events,
+                    iet.body,
+                    CudaChecked(Call("cudaStreamSynchronize", KernelStream())),
+                    CudaChecked(Call("cudaStreamSynchronize", MemCopyStream())),
+                    CudaChecked(Call("cudaStreamSynchronize", HostStream())),
+                ]
+            )
+        )
 
-        return iet, {'efuncs': efuncs}
+        return iet, {"efuncs": efuncs}

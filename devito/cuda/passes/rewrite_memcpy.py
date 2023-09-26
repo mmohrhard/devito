@@ -1,5 +1,4 @@
-
-__all__ = ['cuda_memcpy']
+__all__ = ["cuda_memcpy"]
 
 
 def cuda_memcpy(graph, **kwargs):

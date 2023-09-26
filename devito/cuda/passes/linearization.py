@@ -4,8 +4,16 @@ import numpy as np
 from devito.cuda.nodes import CudaCallable
 
 from devito.data import FULL
-from devito.ir import (BlankLine, Call, Dereference, PointerCast,
-                       FindNodes, FindSymbols, Transformer, Uxreplace)
+from devito.ir import (
+    BlankLine,
+    Call,
+    Dereference,
+    PointerCast,
+    FindNodes,
+    FindSymbols,
+    Transformer,
+    Uxreplace,
+)
 from devito.passes.iet.engine import iet_pass
 from devito.symbolics import DefFunction, MacroArgument, ccode
 from devito.tools import Bunch, DefaultOrderedDict, filter_ordered, flatten, prod
@@ -18,7 +26,7 @@ from devito.cuda.nodes import CudaConstantWrite, CudaConstantDecl
 
 import cgen as c
 
-__all__ = ['cuda_linearize']
+__all__ = ["cuda_linearize"]
 
 
 class Assert(Call):
@@ -47,9 +55,9 @@ def cuda_linearization(iet, **kwargs):
     """
     Carry out the actual work of `linearize`.
     """
-    mode = kwargs['mode']
-    sregistry = kwargs['sregistry']
-    track = kwargs['track']
+    mode = kwargs["mode"]
+    sregistry = kwargs["sregistry"]
+    track = kwargs["track"]
 
     # Pre-process the `mode` opt option
     # `mode` may be a callback describing what Function types, and under what
@@ -65,7 +73,7 @@ def cuda_linearization(iet, **kwargs):
     iet, headers, _globals = linearize_accesses(iet, key, track, sregistry)
     iet = linearize_pointers(iet, key)
 
-    return iet, {'headers': headers, 'globals': _globals}
+    return iet, {"headers": headers, "globals": _globals}
 
 
 def linearize_accesses(iet, key, track, sregistry):
@@ -74,7 +82,7 @@ def linearize_accesses(iet, key, track, sregistry):
     """
     # The `candidates` are all Functions that may be linearized inside `iet`
     kernels = FindNodes(CudaCallable).visit(iet)
-    indexeds = flatten([FindSymbols('indexeds').visit(k) for k in kernels])
+    indexeds = flatten([FindSymbols("indexeds").visit(k) for k in kernels])
     candidates = filter_ordered(i.function for i in indexeds if key(i.function))
     candidates = sorted(candidates, key=lambda f: len(f.dimensions), reverse=True)
 
@@ -95,12 +103,16 @@ def linearize_accesses(iet, key, track, sregistry):
             # likely that padding won't be an issue.. include 'total number
             # of dimensions' and 'dimension of index relative to
             # most rapidly-changing dimension'
-            mapper[(d,
+            mapper[
+                (
+                    d,
                     f._size_halo[d],
                     f._size_padding[d],
                     len(f.dimensions),
                     f.dimensions.index(d) - len(f.dimensions) - 1,
-                    getattr(f, 'grid', None))].append(f)
+                    getattr(f, "grid", None),
+                )
+            ].append(f)
 
     # For all unseen Functions, build the size exprs. For example:
     # `x_fsz0 = u_vec->size[1]`
@@ -118,13 +130,22 @@ def linearize_accesses(iet, key, track, sregistry):
                 # if it was otherwise going to produce invalid results
                 if f != v[0] and isinstance(v[0], DiscreteFunction):
                     track[f].stmts0.append(
-                        c.Statement("assert(%s == %s)" % (
-                            (f._C_get_field(FULL, d).size
-                             if isinstance(f, DiscreteFunction)
-                             else f.symbolic_shape[d]),
-                            (v[0]._C_get_field(FULL, d).size
-                             if isinstance(v[0], DiscreteFunction)
-                             else v[0].symbolic_shape[d]))))
+                        c.Statement(
+                            "assert(%s == %s)"
+                            % (
+                                (
+                                    f._C_get_field(FULL, d).size
+                                    if isinstance(f, DiscreteFunction)
+                                    else f.symbolic_shape[d]
+                                ),
+                                (
+                                    v[0]._C_get_field(FULL, d).size
+                                    if isinstance(v[0], DiscreteFunction)
+                                    else v[0].symbolic_shape[d]
+                                ),
+                            )
+                        )
+                    )
 
     _globals = []
 
@@ -139,7 +160,7 @@ def linearize_accesses(iet, key, track, sregistry):
             try:
                 stmt = built[expr]
             except KeyError:
-                name = sregistry.make_name(prefix='%s_%s_stride' % (f.name, d.name))
+                name = sregistry.make_name(prefix="%s_%s_stride" % (f.name, d.name))
                 s = Global(name=name, dtype=np.int64, is_const=True)
                 stmt = built[expr] = CudaConstantWrite(s, expr, init=True)
                 _globals.append(CudaConstantDecl(s, dtype=np.int64))
@@ -163,7 +184,7 @@ def linearize_accesses(iet, key, track, sregistry):
     iet = Uxreplace(mapper).visit(iet)
 
     # All Functions that can actually be linearized in `iet`
-    defines = FindSymbols('defines-aliases').visit(iet)
+    defines = FindSymbols("defines-aliases").visit(iet)
 
     # All Callables for which `iet` may produce a linearization
     calls = {i.name for i in FindNodes(Call).visit(iet)}
@@ -199,7 +220,7 @@ def _generate_fsz(f, d, sregistry):
 
 @_generate_fsz.register(DiscreteFunction)
 def _(f, d, sregistry):
-    name = sregistry.make_name(prefix='%s_%s_fsz' % (f.name, d.name))
+    name = sregistry.make_name(prefix="%s_%s_fsz" % (f.name, d.name))
     s = Global(name=name, dtype=np.int64, is_const=True)
     expr = f._C_get_field(FULL, d).size
     return (CudaConstantDecl(s, np.int64), CudaConstantWrite(s, expr), expr)
@@ -207,7 +228,7 @@ def _(f, d, sregistry):
 
 @_generate_fsz.register(Array)
 def _(f, d, sregistry):
-    name = sregistry.make_name(prefix='%s_%s_fsz' % (f.name, d.name))
+    name = sregistry.make_name(prefix="%s_%s_fsz" % (f.name, d.name))
     s = Global(name=name, dtype=np.int64, is_const=True)
     expr = f.symbolic_shape[d]
     return (CudaConstantDecl(s, np.int64), CudaConstantWrite(s, expr), expr)
@@ -223,11 +244,15 @@ def _generate_macro(f, szs, sregistry):
 def _(f, szs, sregistry):
     assert len(szs) == len(f.dimensions) - 1
 
-    pname = sregistry.make_name(prefix='%sL' % f.name)
+    pname = sregistry.make_name(prefix="%sL" % f.name)
     cbk = lambda i, pname=pname: FIndexed(i, pname, strides=tuple(szs.values()))
 
-    expr = sum([MacroArgument("_" + d0.name)*szs[d1].lhs
-                for d0, d1 in zip(f.dimensions, f.dimensions[1:])])
+    expr = sum(
+        [
+            MacroArgument("_" + d0.name) * szs[d1].lhs
+            for d0, d1 in zip(f.dimensions, f.dimensions[1:])
+        ]
+    )
     expr += MacroArgument("_" + f.dimensions[-1].name)
     expr = Indexed(IndexedData(f.name, None, f), expr)
     define = DefFunction(pname, ["_" + d.name for d in f.dimensions])
@@ -248,14 +273,22 @@ def linearize_pointers(iet, key):
         mapper = {}
 
         # Linearize casts, e.g. `float *u = (float*) u_vec->data`
-        mapper.update({n: n._rebuild(flat=True)
-                       for n in FindNodes(PointerCast).visit(iet)
-                       if n.function in candidates})
+        mapper.update(
+            {
+                n: n._rebuild(flat=True)
+                for n in FindNodes(PointerCast).visit(iet)
+                if n.function in candidates
+            }
+        )
 
         # Linearize array dereferences, e.g. `float *r1 = (float*) pr1[tid]`
-        mapper.update({n: n._rebuild(flat=True)
-                       for n in FindNodes(Dereference).visit(iet)
-                       if n.pointer.is_PointerArray and n.pointee in candidates})
+        mapper.update(
+            {
+                n: n._rebuild(flat=True)
+                for n in FindNodes(Dereference).visit(iet)
+                if n.pointer.is_PointerArray and n.pointee in candidates
+            }
+        )
 
         global_mapper[kernel] = Transformer(mapper).visit(kernel)
 

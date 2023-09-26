@@ -5,8 +5,15 @@ from devito.types.parallel import DeviceCreate, DeviceRM, UpdateDevice, UpdateHo
 from devito.tools.utils import filter_sorted, flatten
 
 from devito.symbolics.printer import ccode
-from devito.symbolics.extended_sympy import (VOID, Byref, CondOr, IndexedPointer,
-                                             Keyword, ReservedWord, SizeOf)
+from devito.symbolics.extended_sympy import (
+    VOID,
+    Byref,
+    CondOr,
+    IndexedPointer,
+    Keyword,
+    ReservedWord,
+    SizeOf,
+)
 
 from devito.ir.iet.nodes import Call, Conditional, Definition, List, ListInitializer
 from devito.ir.iet.efunc import EntryFunction
@@ -21,15 +28,21 @@ from devito.passes.iet.misc import is_on_device
 from devito.cuda.passes.tuning import kernel_tuning
 from devito.cuda.utils import flatten_dict
 from devito.cuda.lang import CudaBB
-from devito.cuda.nodes import (CudaCall, CudaCallable, CudaDealloc, CudaHostFuncCall,
-                               CudaKernelPointerCast, CudaTransfer, DeviceCall,
-                               DeviceFunction)
+from devito.cuda.nodes import (
+    CudaCall,
+    CudaCallable,
+    CudaDealloc,
+    CudaHostFuncCall,
+    CudaKernelPointerCast,
+    CudaTransfer,
+    DeviceCall,
+    DeviceFunction,
+)
 
-__all__ = ['DeviceCudaDataManager']
+__all__ = ["DeviceCudaDataManager"]
 
 
 class DeviceCudaDataManager(DataManager):
-
     lang = CudaBB
 
     def __init__(self, sregistry, options):
@@ -47,18 +60,19 @@ class DeviceCudaDataManager(DataManager):
               `TimeFunction`'s are assumed to fit in the device memory.
         """
         super().__init__(sregistry)
-        self.gpu_fit = options['gpu-fit']
-        self.gpu_nofit = options['gpu-nofit']
+        self.gpu_fit = options["gpu-fit"]
+        self.gpu_nofit = options["gpu-nofit"]
 
     def _alloc_local_array_on_high_bw_mem(self, site, obj, storage, devicerm=None):
         """
         Allocate a local Array in the device high bandwidth memory.
         """
-        nbytes = SizeOf(obj._C_typedata)*obj.size
+        nbytes = SizeOf(obj._C_typedata) * obj.size
 
-        allocs = (Call("PER_DEVICE_TEMP_GET", (ReservedWord(str(obj._C_typedata)),
-                                               obj._C_symbol,
-                                               nbytes)))
+        allocs = Call(
+            "PER_DEVICE_TEMP_GET",
+            (ReservedWord(str(obj._C_typedata)), obj._C_symbol, nbytes),
+        )
 
         free = Call("PER_DEVICE_TEMP_DESTROY", (obj._C_name,))
         free = Conditional(DeviceRM(), free)
@@ -74,7 +88,7 @@ class DeviceCudaDataManager(DataManager):
         if obj._C_init:
             definition = (decl, obj._C_init)
         else:
-            definition = (decl)
+            definition = decl
 
         frees = obj._C_free
 
@@ -85,7 +99,7 @@ class DeviceCudaDataManager(DataManager):
         Allocate an Array in the low latency memory.
         """
         shape = "".join("[%s]" % ccode(i) for i in obj.symbolic_shape)
-        alignment = self.lang['aligned'](obj._data_alignment)
+        alignment = self.lang["aligned"](obj._data_alignment)
         if obj.initvalue is None:
             initvalue = None
         else:
@@ -106,12 +120,12 @@ class DeviceCudaDataManager(DataManager):
         """
         decl = Definition(obj)
 
-        memptr = VOID(Byref(obj._C_symbol), '**')
+        memptr = VOID(Byref(obj._C_symbol), "**")
         alignment = obj._data_alignment
-        nbytes = SizeOf(obj._C_typedata)*obj.size
-        alloc = self.lang['host-alloc'](memptr, alignment, nbytes)
+        nbytes = SizeOf(obj._C_typedata) * obj.size
+        alloc = self.lang["host-alloc"](memptr, alignment, nbytes)
 
-        free = self.lang['host-free'](obj._C_symbol)
+        free = self.lang["host-free"](obj._C_symbol)
 
         storage.update(obj, site, allocs=(decl, alloc), frees=free)
 
@@ -120,16 +134,23 @@ class DeviceCudaDataManager(DataManager):
         Allocate a mapped Array in the host high bandwidth memory.
         """
 
-        nbytes_arg = SizeOf(obj.indexed._C_typedata)*obj.size
+        nbytes_arg = SizeOf(obj.indexed._C_typedata) * obj.size
 
-        alloc = List(body=[
-            Call("PER_DEVICE_ARRAY_TEMP_DECLARE", (obj._C_symbol,
-                                                   ReservedWord(obj._C_typedata))),
-            Call("PER_DEVICE_ARRAY_TEMP_GET", (obj._C_symbol, nbytes_arg), retobj=obj),
-        ])
+        alloc = List(
+            body=[
+                Call(
+                    "PER_DEVICE_ARRAY_TEMP_DECLARE",
+                    (obj._C_symbol, ReservedWord(obj._C_typedata)),
+                ),
+                Call(
+                    "PER_DEVICE_ARRAY_TEMP_GET", (obj._C_symbol, nbytes_arg), retobj=obj
+                ),
+            ]
+        )
 
-        free = Conditional(DeviceRM(), Call("PER_DEVICE_ARRAY_TEMP_DESTROY",
-                                            (obj._C_symbol,)))
+        free = Conditional(
+            DeviceRM(), Call("PER_DEVICE_ARRAY_TEMP_DESTROY", (obj._C_symbol,))
+        )
 
         storage.update(obj, site, allocs=alloc, frees=free)
 
@@ -156,25 +177,31 @@ class DeviceCudaDataManager(DataManager):
         # The pointer array
         decl = Definition(obj)
 
-        memptr = VOID(Byref(obj._C_symbol), '**')
+        memptr = VOID(Byref(obj._C_symbol), "**")
         alignment = obj._data_alignment
-        nbytes = SizeOf(Keyword('%s*' % obj._C_typedata))*obj.dim.symbolic_size
-        alloc0 = self.lang['host-alloc'](memptr, alignment, nbytes)
+        nbytes = SizeOf(Keyword("%s*" % obj._C_typedata)) * obj.dim.symbolic_size
+        alloc0 = self.lang["host-alloc"](memptr, alignment, nbytes)
 
-        free0 = self.lang['host-free'](obj._C_symbol)
+        free0 = self.lang["host-free"](obj._C_symbol)
 
         # The pointee Array
         pobj = IndexedPointer(obj._C_symbol, obj.dim)
-        memptr = VOID(Byref(pobj), '**')
-        nbytes = SizeOf(obj._C_typedata)*obj.array.size
-        alloc1 = self.lang['host-alloc'](memptr, alignment, nbytes)
+        memptr = VOID(Byref(pobj), "**")
+        nbytes = SizeOf(obj._C_typedata) * obj.array.size
+        alloc1 = self.lang["host-alloc"](memptr, alignment, nbytes)
 
-        free1 = self.lang['host-free'](pobj)
+        free1 = self.lang["host-free"](pobj)
 
         # Dump
         if obj.dim is self.sregistry.threadid:
-            storage.update(obj, site, allocs=(decl, alloc0), frees=free0,
-                           pallocs=(obj.dim, alloc1), pfrees=(obj.dim, free1))
+            storage.update(
+                obj,
+                site,
+                allocs=(decl, alloc0),
+                frees=free0,
+                pallocs=(obj.dim, alloc1),
+                pfrees=(obj.dim, free1),
+            )
         else:
             storage.update(obj, site, allocs=(decl, alloc0, alloc1), frees=(free0, free1))
 
@@ -187,9 +214,17 @@ class DeviceCudaDataManager(DataManager):
         # When using CUDA we allocate everything in a device-visible manner
         return
 
-    def _map_function_on_high_bw_mem(self, site, obj, storage, devicerm, read_only=False,
-                                     devicecreate=None, updatehost=None,
-                                     updatedevice=None):
+    def _map_function_on_high_bw_mem(
+        self,
+        site,
+        obj,
+        storage,
+        devicerm,
+        read_only=False,
+        devicecreate=None,
+        updatehost=None,
+        updatedevice=None,
+    ):
         """
         Map a Function already defined in the host memory in to the device high
         bandwidth memory.
@@ -201,15 +236,19 @@ class DeviceCudaDataManager(DataManager):
         synchronize the host and device copies, while the latter does not.
         """
         if devicecreate:
-            mmap = [self.lang._map_update_device(obj, condition=CondOr(devicecreate,
-                                                                       updatedevice))]
+            mmap = [
+                self.lang._map_update_device(
+                    obj, condition=CondOr(devicecreate, updatedevice)
+                )
+            ]
         else:
             mmap = self.lang._map_to(obj)
 
         if read_only is False:
-            unmap = [self.lang._map_update_host(obj, condition=CondOr(updatehost,
-                                                                      devicerm)),
-                     self.lang._map_release(obj, devicerm=devicerm)]
+            unmap = [
+                self.lang._map_update_host(obj, condition=CondOr(updatehost, devicerm)),
+                self.lang._map_release(obj, devicerm=devicerm),
+            ]
         else:
             unmap = self.lang._map_delete(obj, devicerm=devicerm)
 
@@ -219,8 +258,9 @@ class DeviceCudaDataManager(DataManager):
         mapper = {}
         for k, v in storage.items():
             if v.maps or v.unmaps:
-                mapper[iet.body] = iet.body._rebuild(maps=flatten(v.maps),
-                                                     unmaps=flatten(v.unmaps))
+                mapper[iet.body] = iet.body._rebuild(
+                    maps=flatten(v.maps), unmaps=flatten(v.unmaps)
+                )
 
         processed = Transformer(mapper, nested=True).visit(iet)
 
@@ -234,22 +274,27 @@ class DeviceCudaDataManager(DataManager):
         """
 
         def needs_transfer(f):
-            return (f._mem_mapped and
-                    not isinstance(f, AliasFunction) and
-                    is_on_device(f, self.gpu_fit))
+            return (
+                f._mem_mapped
+                and not isinstance(f, AliasFunction)
+                and is_on_device(f, self.gpu_fit)
+            )
 
         writes = set()
         reads = set()
         for i, v in MapExprStmts().visit(iet).items():
-            if not any(isinstance(j, self.lang.DeviceIteration) for j in v) and \
-               not isinstance(i, DeviceCall) and \
-               not isinstance(iet, DeviceFunction):
+            if (
+                not any(isinstance(j, self.lang.DeviceIteration) for j in v)
+                and not isinstance(i, DeviceCall)
+                and not isinstance(iet, DeviceFunction)
+            ):
                 # Not an offloaded Iteration tree
                 continue
 
             writes.update({w for w in i.writes if needs_transfer(w)})
-            reads.update({f for f in i.functions
-                          if needs_transfer(f) and f not in writes})
+            reads.update(
+                {f for f in i.functions if needs_transfer(f) and f not in writes}
+            )
 
         return (reads, writes)
 
@@ -283,25 +328,35 @@ class DeviceCudaDataManager(DataManager):
                 if i.is_Array:
                     self._map_array_on_high_bw_mem(iet, i, storage)
                 else:
-                    self._map_function_on_high_bw_mem(iet, i, storage, devicerm,
-                                                      devicecreate=devicecreate,
-                                                      updatehost=updatehost,
-                                                      updatedevice=updatedevice)
+                    self._map_function_on_high_bw_mem(
+                        iet,
+                        i,
+                        storage,
+                        devicerm,
+                        devicecreate=devicecreate,
+                        updatehost=updatehost,
+                        updatedevice=updatedevice,
+                    )
             for i in filter_sorted(reads - writes):
                 if i.is_Array:
                     self._map_array_on_high_bw_mem(iet, i, storage)
                 else:
-                    self._map_function_on_high_bw_mem(iet, i, storage, devicerm,
-                                                      read_only=True,
-                                                      devicecreate=devicecreate,
-                                                      updatehost=updatehost,
-                                                      updatedevice=updatedevice)
+                    self._map_function_on_high_bw_mem(
+                        iet,
+                        i,
+                        storage,
+                        devicerm,
+                        read_only=True,
+                        devicecreate=devicecreate,
+                        updatehost=updatehost,
+                        updatedevice=updatedevice,
+                    )
 
             iet = self._dump_transfers(iet, storage)
 
             return iet, {}
 
-        return _place_transfers(iet, mapper=kwargs['mapper'])
+        return _place_transfers(iet, mapper=kwargs["mapper"])
 
     @iet_visit
     def derive_cuda_casts(self, iet, **kwargs):
@@ -310,11 +365,14 @@ class DeviceCudaDataManager(DataManager):
         mapper = {}
 
         for kernel in kernels:
-            indexeds = FindSymbols('indexeds|indexedbases').visit(kernel)
-            defines = set(FindSymbols('defines').visit(kernel)) - set(kernel.parameters)
+            indexeds = FindSymbols("indexeds|indexedbases").visit(kernel)
+            defines = set(FindSymbols("defines").visit(kernel)) - set(kernel.parameters)
             bases = sorted({i.base for i in indexeds}, key=lambda i: i.name)
-            casts = [CudaKernelPointerCast(i.function, obj=i) for i in bases
-                     if i.function not in defines]
+            casts = [
+                CudaKernelPointerCast(i.function, obj=i)
+                for i in bases
+                if i.function not in defines
+            ]
 
             # Incorporate the newly created casts
             if casts:
@@ -327,7 +385,6 @@ class DeviceCudaDataManager(DataManager):
         calls = FindNodes(CudaCall).visit(iet)
         cmapper = {}
         for kernel, replacement in mapper.items():
-
             template_args = replacement.template_arguments
             our_calls = [c for c in calls if c.name == kernel.name]
             for c in our_calls:
@@ -338,12 +395,21 @@ class DeviceCudaDataManager(DataManager):
     @iet_pass
     def place_cuda_non_kernel_casts(self, iet, **kwargs):
         if not isinstance(iet, CudaCallable):
-            cuda_filter = lambda n: isinstance(n, (CudaCall, CudaCallable, CudaDealloc,
-                                                   PragmaTransfer, CudaHostFuncCall,
-                                                   CudaTransfer))
+            cuda_filter = lambda n: isinstance(
+                n,
+                (
+                    CudaCall,
+                    CudaCallable,
+                    CudaDealloc,
+                    PragmaTransfer,
+                    CudaHostFuncCall,
+                    CudaTransfer,
+                ),
+            )
             # Candidates
-            indexeds = FindSymbols('indexeds|indexedbases',
-                                   stop_filter=cuda_filter).visit(iet)
+            indexeds = FindSymbols(
+                "indexeds|indexedbases", stop_filter=cuda_filter
+            ).visit(iet)
 
             # Create Function -> n-dimensional array casts
             # E.g. `float (*u)[.] = (float (*)[.]) u_vec->data`
@@ -355,10 +421,13 @@ class DeviceCudaDataManager(DataManager):
             # we use iet.body here because we manually futz with the defines for some
             # nodes to coerce Devito into outputting function signatures the way
             # we want them
-            defines = set(FindSymbols('defines', stop_filter=cuda_filter).visit(iet.body))
+            defines = set(FindSymbols("defines", stop_filter=cuda_filter).visit(iet.body))
             bases = sorted({i.base for i in indexeds}, key=lambda i: i.name)
-            casts = [self.lang.PointerCast(i.function, obj=i) for i in bases
-                     if i.function not in defines]
+            casts = [
+                self.lang.PointerCast(i.function, obj=i)
+                for i in bases
+                if i.function not in defines
+            ]
 
             # Incorporate the newly created casts
             if casts:
@@ -368,7 +437,7 @@ class DeviceCudaDataManager(DataManager):
 
     @iet_pass
     def place_cuda_casts(self, iet, **kwargs):
-        return Transformer(kwargs['mapper']).visit(iet), {}
+        return Transformer(kwargs["mapper"]).visit(iet), {}
 
     def process(self, graph):
         """
@@ -381,7 +450,8 @@ class DeviceCudaDataManager(DataManager):
         cast_mapper = flatten_dict(cast_mapper, prefix=None)
         cast_mapper = flatten_dict(
             self.derive_cuda_kernel_call_parameters(graph, mapper=cast_mapper),
-            prefix=None)
+            prefix=None,
+        )
         self.place_cuda_casts(graph, mapper=cast_mapper)
         self.place_cuda_non_kernel_casts(graph)
         kernel_tuning(graph)
