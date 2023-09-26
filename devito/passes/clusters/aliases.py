@@ -41,7 +41,7 @@ def cire(clusters, mode, sregistry, options, platform):
         The symbol registry, to create unique temporary names.
     options : dict
         The optimization options.
-        Accepted: ['min-storage', 'cire-maxpar', 'cire-rotate'].
+        Accepted: ['min-storage', 'cire-maxpar', 'cire-rotate', 'cire-aggressive'].
         * 'min-storage': if True, the pass will try to minimize the amount of
           storage introduced for the tensor temporaries. This might also reduce
           the operation count. On the other hand, this might affect fusion and
@@ -53,6 +53,8 @@ def cire(clusters, mode, sregistry, options, platform):
         * 'cire-rotate': if True, the pass will use modulo indexing for the
           outermost Dimension iterated over by the temporaries. This will sacrifice
           a parallel loop for a reduced working set size. Defaults to False (legacy).
+        * 'cire-aggressive': if True, the 'sops' pass will consider all sums of
+          products, rather than only those in a derivative context
     platform : Platform
         The underlying platform. Used to optimize the shape of the introduced
         tensor symbols.
@@ -315,6 +317,7 @@ class CireSops(CireTransformer):
 
         self.opt_maxpar = options['cire-maxpar']
         self.opt_schedule_strategy = options['cire-schedule']
+        self.opt_aggressive = options['cire-aggressive']
         self.opt_multisubdomain = False
 
     def process(self, clusters):
@@ -343,10 +346,12 @@ class CireSops(CireTransformer):
         def cbk_search(expr):
             if isinstance(expr, EvalDerivative) and not expr.base.is_Function:
                 return expr.args
+            elif self.opt_aggressive and isinstance(expr, sympy.Add) and not expr.is_Function and all(isinstance(x, sympy.Mul) and all(a.is_Number or a.is_Function or a.is_Indexed or a.is_Symbol for a in x.args) for x in expr.args):
+                return flatten([expr, [e for e in [cbk_search(a) for a in expr.args] if e]])
             else:
                 return flatten(e for e in [cbk_search(a) for a in expr.args] if e)
 
-        cbk_compose = lambda e: split_coeff(e)[1]
+        cbk_compose = lambda e: split_coeff(e)[1] if isinstance(e, EvalDerivative) else flatten(e.args)
         basextr = self._do_generate(exprs, exclude, cbk_search, cbk_compose)
         if not basextr:
             return

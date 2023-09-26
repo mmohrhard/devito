@@ -269,13 +269,13 @@ class DeviceAwareMixin(object):
 
             try:
                 lang_init = [self.lang['init'](devicetype)]
-            except TypeError:
+            except Exception:
                 # Not all target languages need to be explicitly initialized
                 lang_init = []
 
             try:
                 lang_fini = [self.lang['fini'](devicetype)]
-            except TypeError:
+            except Exception:
                 lang_fini = []
 
             if objcomm is not None:
