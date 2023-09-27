@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from devito.ir import FindSymbols, derive_parameters
 from devito.tools import filter_ordered, flatten
 
@@ -29,3 +31,7 @@ def tuple_to_dim3(grid):
     return "dim3(%s)" % ", ".join(
         str(x) if "/" not in str(x) else ("max(1, %s)" % str(x)) for x in grid
     )
+
+
+def get_header_include_path() -> Path:
+    return Path(__file__).resolve().parent / "headers"
