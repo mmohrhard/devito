@@ -29,7 +29,6 @@ from devito.passes.iet import mpiize, hoist_prodders, is_on_device
 __all__ = [
     "DeviceNoopCudaOperator",
     "DeviceAdvCudaOperator",
-    "DeviceAdvCudaOperator",
     "DeviceFsgCudaOperator",
     "DeviceCustomCudaOperator",
 ]

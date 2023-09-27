@@ -17,7 +17,13 @@ from devito.types.tensor import *  # noqa
 from devito.finite_differences import *  # noqa
 from devito.operations.solve import *
 from devito.operator import Operator  # noqa
-from devito.cuda import * # noqa
+from devito.cuda import (
+    DeviceCudaTarget,
+    DeviceNoopCudaOperator,
+    DeviceAdvCudaOperator,
+    DeviceFsgCudaOperator,
+    DeviceCustomCudaOperator,
+)
 
 # Other stuff exposed to the user
 from devito.builtins import *  # noqa
