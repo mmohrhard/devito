@@ -32,7 +32,6 @@ from devito.cuda.nodes import (
     CudaCall,
     CudaCallable,
     CudaDealloc,
-    CudaHostFuncCall,
     CudaKernelPointerCast,
     CudaTransfer,
     DeviceCall,
@@ -402,7 +401,6 @@ class DeviceCudaDataManager(DataManager):
                     CudaCallable,
                     CudaDealloc,
                     PragmaTransfer,
-                    CudaHostFuncCall,
                     CudaTransfer,
                 ),
             )
@@ -421,7 +419,14 @@ class DeviceCudaDataManager(DataManager):
             # we use iet.body here because we manually futz with the defines for some
             # nodes to coerce Devito into outputting function signatures the way
             # we want them
-            defines = set(FindSymbols("defines", stop_filter=cuda_filter).visit(iet.body))
+            defines = set(
+                [
+                    x.function
+                    for x in FindSymbols("defines", stop_filter=cuda_filter).visit(
+                        iet.body
+                    )
+                ]
+            )
             bases = sorted({i.base for i in indexeds}, key=lambda i: i.name)
             casts = [
                 self.lang.PointerCast(i.function, obj=i)

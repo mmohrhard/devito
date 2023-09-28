@@ -595,5 +595,20 @@ class CudaHostFuncCall(AsyncCall):
         self.stream = stream
 
 
+class CudaHostFuncLaunchCall(Call):
+    def __init__(self, stream=None, name=None, param=None):
+        super().__init__(name)
+        self._stream = stream
+        self._param = param
+
+    @cached_property
+    def stream(self):
+        return self._stream
+
+    @cached_property
+    def param(self):
+        return self._param
+
+
 class CudaHostFuncCallable(AsyncCallable):
     pass

@@ -258,6 +258,12 @@ class CudaCGen(CGen):
             o.stream,
         )
 
+    def visit_CudaHostFuncLaunchCall(self, o):
+        return c.Statement(
+            "cudaLaunchHostFunc(%s, (cudaHostFn_t)%s, %s)"
+            % (o.stream if o.stream is not None else 0, o.name, o.param)
+        )
+
     def visit_Operator(self, o, mode="all"):
         # Kernel signature and body
         body = flatten(self._visit(i) for i in o.children)

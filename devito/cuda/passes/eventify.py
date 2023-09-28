@@ -31,7 +31,11 @@ from devito.tools.utils import as_list, flatten, split
 from devito.types.misc import Pointer
 from devito.types.parallel import QueueID, ThreadArray
 
-from devito.cuda.nodes import CudaHostFuncCall, CudaHostFuncCallable
+from devito.cuda.nodes import (
+    CudaHostFuncCall,
+    CudaHostFuncCallable,
+    CudaHostFuncLaunchCall,
+)
 from devito.cuda.types import NullPointer
 
 __all__ = ["cuda_eventify"]
@@ -194,7 +198,6 @@ def lower_async_calls(iet, track=None, sregistry=None):
         b = track[n.name]
         name = sregistry.make_name(prefix="sdata")
         sdata = b.sdata._rebuild(name=name)
-        name = sregistry.make_name(prefix="threads")
 
         # Call to `sdata` initialization Callable
         sbase = sdata.symbolic_base
@@ -230,12 +233,7 @@ def lower_async_calls(iet, track=None, sregistry=None):
             [DummyExpr(FieldFromComposite(i.name, sdata[d]), i) for i in sdata.ncfields]
         )
 
-        activation.append(
-            c.Statement(
-                "cudaLaunchHostFunc(%s, (cudaHostFn_t)%s, %s)"
-                % (n.stream if n.stream is not None else 0, n.name, ccode(sbase + d))
-            ),
-        )
+        activation.append(CudaHostFuncLaunchCall(n.stream, n.name, ccode(sbase + d)))
 
         activation = List(
             header=[c.Line(), c.Comment("Activate background task")],
