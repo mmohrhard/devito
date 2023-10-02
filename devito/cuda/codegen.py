@@ -219,6 +219,8 @@ class CudaCGen(CGen):
                 ccode(o.stream) if o.stream is not None else "cudaStreamDefault"
             )
 
+            dest_args.append(f'"{o.name}"')
+
             return c.Statement("%s(%s)" % (method, ", ".join(dest_args)))
 
     def visit_CudaAlloc(self, o):
@@ -406,7 +408,7 @@ class MultilineCudaCall(c.Generable):
                 + ", ".join(str(i) for i in grid)
                 + ");"
             )
-        yield '\tprogram.kernel("%s", {"--use_fast_math"})' % self.name
+        yield '\tprogram.kernel("%s", NVRTC_OPTS)' % self.name
         tip = "\t\t.instantiate(/* thread block dimensions */ "
         tip += ", ".join(
             f"{thread_name}.{x[0]}" for x in zip(["x", "y", "z"], self._preferred_block)

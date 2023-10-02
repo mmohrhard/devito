@@ -4,20 +4,90 @@
 #include <devito/jitify.hpp>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
+#include <stdexcept>
 #include <stdio.h>
+#include <string>
 #include <tuple>
 #include <utility>
 
-//#define TUNING_DEBUGGING
-#ifdef TUNING_DEBUGGING
-#define debug_printf(...) fprintf(stderr, __VA_ARGS__)
+#ifdef KERNEL_DEBUGGING
+#define NVRTC_OPTS                                                             \
+  { "--use_fast_math", "-G" }
 #else
-#define debug_printf(...)                                                      \
-  {}
+#ifndef NVRTC_OPTS
+#define NVRTC_OPTS {"--use_fast_math"}
+#endif
 #endif
 
+enum LogLevel {
+  CRITICAL = 50,
+  FATAL = 50,
+  ERROR = 40,
+  WARNING = 30,
+  WARN = 30,
+  INFO = 20,
+  DEBUG = 10,
+  NOTSET = 0
+};
+
+typedef void (*LogHandler)(int logLevel, const char *message) ;
+
+LogHandler _logHandler = nullptr;
+
+extern "C" void setLogHandler(void *handler) {
+    _logHandler = (LogHandler)handler;
+}
+
+template <typename... Args>
+std::string string_format(const std::string &format, Args... args) {
+    int size_s = std::snprintf(nullptr, 0, format.c_str(), args...) +
+                 1; // Extra space for '\0'
+    if (size_s <= 0) {
+      throw std::runtime_error("Error during formatting.");
+    }
+    auto size = static_cast<size_t>(size_s);
+    std::unique_ptr<char[]> buf(new char[size]);
+    std::snprintf(buf.get(), size, format.c_str(), args...);
+    return std::string(buf.get(),
+                       buf.get() + size - 1); // We don't want the '\0' inside
+}
+
+template <typename... Args>
+inline void log(int logLevel, const std::string &format,
+         Args... args)  {
+    if (_logHandler == nullptr)
+        return;
+
+    std::string message = string_format(format, std::forward<Args>(args)...);
+    _logHandler(logLevel, message.c_str());
+}
+
+template <typename... Args>
+inline void debug( const std::string &format,
+                Args... args) {
+    log(LogLevel::DEBUG, format, std::forward<Args>(args)...);
+}
+
+template <typename... Args>
+inline void info(const std::string &format, Args... args) {
+    log(LogLevel::INFO, format, std::forward<Args>(args)...);
+}
+
+template <typename... Args>
+inline void warn(const std::string &format, Args... args) {
+    log(LogLevel::WARNING, format, std::forward<Args>(args)...);
+}
+
+template <typename... Args>
+inline void critical(const std::string &format, Args... args) {
+    log(LogLevel::CRITICAL, format, std::forward<Args>(args)...);
+}
+
+
 #define CudaChecked(f) _cudaChecked((f), __FILE__, __LINE__)
+#define CudaCheckedEx(f, msg) _cudaChecked((f), __FILE__, __LINE__, msg)
 #define STRINGIFY(x) _stringify(x)
 #define _stringify(x) #x
 
@@ -30,7 +100,7 @@
     cudaGetDevice(&device);                                                    \
     assert(device >= 0 && device < MAX_CUDA_DEVICES);                          \
     if (NAME##_device[device] == nullptr) {                                    \
-      debug_printf("allocating %llu bytes for " STRINGIFY(NAME) " on device %d\n", SIZE, device);   \
+      debug("allocating %llu bytes for " STRINGIFY(NAME) " on device %d", SIZE, device);   \
       CudaChecked(cudaMalloc((void **)&NAME##_device[device], (SIZE)));        \
       cudaMemset(NAME##_device[device], 1, (SIZE));                            \
     }                                                                          \
@@ -65,7 +135,8 @@ inline void _cudaChecked(cudaError_t err, const char *file, int line,
                          const char *extra = nullptr) {
   if (err != cudaSuccess) {
     err = cudaGetLastError();
-    fprintf(stderr, "!!! CUDA Error in operator: %s:%d %s\n", file, line,
+    critical("!!! CUDA Error in operator: %s:%d %s%s", file, line,
+            (extra != nullptr) ? extra : "",
             cudaGetErrorString(err));
     exit(1);
   }
@@ -77,7 +148,7 @@ inline void _cudaCheckKernelLaunch(dim3 grid, dim3 block, const char *file,
                                    int line) {
   cudaError_t err = cudaPeekAtLastError();
   if (err != cudaSuccess) {
-    fprintf(stderr, "!!! CUDA Error after kernel launch: %s:%d %s\n", file,
+    critical("!!! CUDA Error after kernel launch: %s:%d %s", file,
             line, cudaGetErrorString(err));
     exit(1);
   }
@@ -103,7 +174,7 @@ template <typename T> inline T *_allocTempArray(T **array_ptr, size_t nbytes, co
 
   T *array = *array_ptr;
   if (array->nbytes != nbytes) {
-    debug_printf("%sallocating %llu bytes for %s for temporary data on device %d\n", array->nbytes > 0 ? "re" : "", nbytes, name, device);
+    debug("%sallocating %llu bytes for %s for temporary data on device %d", array->nbytes > 0 ? "re" : "", nbytes, name, device);
     _freeTempArrayData(array);
     CudaChecked(cudaMallocHost((void **)(&array->data), nbytes));
     CudaChecked(cudaMalloc((void **)(&array->device_data), nbytes));
@@ -192,7 +263,8 @@ template <typename T> inline void _cudaEnsureAllocated() {}
 
 template <typename T>
 void transferDataObject(cudaMemcpyKind kind, T *obj, size_t size = 0,
-                        bool cond = true, cudaStream_t stream = nullptr) {
+                        bool cond = true, cudaStream_t stream = nullptr, 
+                        const char *name = nullptr) {
   T *src = nullptr;
   T *dst = nullptr;
   if (kind == cudaMemcpyHostToDevice) {
@@ -207,8 +279,13 @@ void transferDataObject(cudaMemcpyKind kind, T *obj, size_t size = 0,
     if (stream != nullptr && stream != cudaStreamDefault)
       CudaChecked(cudaMemcpyAsync(dst, src, size, kind, stream));
     else {
-      debug_printf("transferring %s..\n",
-                   kind == cudaMemcpyHostToDevice ? "H->D" : "D->H");
+      debug("transferring %s %s (%lx -> %lx)",
+                        name,
+                        kind == cudaMemcpyHostToDevice ? "H->D" : "D->H",
+                        src,
+                        dst
+                    );
+              
       CudaChecked(cudaMemcpy(dst, src, size, kind));
     }
   }
@@ -222,18 +299,18 @@ void _prepareDataObject(T *obj, const char *name, size_t size, bool copyIn = tru
   cudaGetDevice(&device);
   if (!_cudaPtrIsManaged(obj->data)) {
     if (obj->device_data == nullptr) {
-      debug_printf("allocating %llu bytes for %s on device %d\n", size, name, device);
+      debug("allocating %llu bytes for %s on device %d", size, name, device);
       CudaChecked(cudaMalloc((void **)&obj->device_data, size));
       obj->operator_allocated = 1;
     }
-    transferDataObject(cudaMemcpyHostToDevice, obj, size, copyIn, stream);
+    transferDataObject(cudaMemcpyHostToDevice, obj, size, copyIn, stream, name);
   }
 }
 #define destroyDataObject(NAME, ...) _destroyDataObject(NAME, STRINGIFY(NAME), __VA_ARGS__);
 
 template <typename T> void _destroyDataObject(T *obj, const char *name, bool del = true) {
   if (del && obj->operator_allocated) {
-    debug_printf("freeing %s\n", name);
+    debug("freeing %s", name);
     CudaChecked(cudaFree(obj->device_data));
     obj->device_data = nullptr;
   }
@@ -304,12 +381,11 @@ static float _occupancyForKernel(CUfunction &k, const dim3 &block) {
 
   int max_block_per_sm_warp = max_sm_warps / warps;
   
-  debug_printf("\n");
-  debug_printf("warps per sm (register limited) = %d\n",
+  debug("warps per sm (register limited) = %d",
                active_warps);
-  debug_printf("max blocks per sm (register limited) = %d\n",
+  debug("max blocks per sm (register limited) = %d",
                max_block_per_sm_reg);
-  debug_printf("max blocks per sm (thread limited) = %d\n", max_block_per_sm_warp);
+  debug("max blocks per sm (thread limited) = %d", max_block_per_sm_warp);
 
   float warp_sm_reg_occupancy =
       (32 * (float)active_warps) / (float)max_sm_threads;
@@ -334,7 +410,7 @@ _check_kernel(const dim3 &block, const dim3 &sub_block,
   est_occupancy = 0.f;
   regs = 0;
 
-  debug_printf("\n\ntrying with block size (%d, %d, %d)..\n", block.x, block.y, block.z);
+  debug("trying with block size (%d, %d, %d)..", block.x, block.y, block.z);
 
   CUresult res = cuOccupancyMaxPotentialBlockSize(&grid, &max_block,
                                                   (CUfunction)k, nullptr, 0, 0);
@@ -345,8 +421,8 @@ _check_kernel(const dim3 &block, const dim3 &sub_block,
       return false;
 
     occupancy = _occupancyForKernel(k, block);
-    debug_printf("rebuilt kernel is valid, has max occupancy at %d threads "
-                 "(%.2f device occupancy), uses %d registers\n",
+    debug("rebuilt kernel is valid, has max occupancy at %d threads "
+                 "(%.2f device occupancy), uses %d registers",
                  max_block, 100. * occupancy, regs);
     if (max_block >= block.x * block.y * block.z) {
       is_valid = true;
@@ -396,9 +472,9 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
     return tuning.at(cf);
   }
 
-  debug_printf("=== performing tuning for %s with default block "
+  debug("=== performing tuning for %s with default block "
                "%d,%d,%d, sub-block "
-               "%d,%d,%d, and expected grid size (%d, %d, %d)\n",
+               "%d,%d,%d, and expected grid size (%d, %d, %d)",
                name, preferred.x, preferred.y, preferred.z, preferred_sub.x,
                preferred_sub.y, preferred_sub.z, expected_grid.x,
                expected_grid.y, expected_grid.z);
@@ -409,16 +485,15 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
       cuOccupancyMaxPotentialBlockSize(&grid, &max_block, cf, nullptr, 0, 0);
 
   if (res != 0) {
-    fprintf(stderr,
-            "!!! invalid kernel detected! could not calculate occupancy "
+    critical("!!! invalid kernel detected! could not calculate occupancy "
             "for %s "
-            "with blocksize (%d, %d, %d), sub-block size (%d, %d, %d)!\n",
+            "with blocksize (%d, %d, %d), sub-block size (%d, %d, %d)!",
             name, preferred.x, preferred.y, preferred.z, preferred_sub.x,
             preferred_sub.y, preferred_sub.z);
     assert(false);
   }
 
-  debug_printf("maximum occupancy is at %d threads with minimum %d grid size\n",
+  debug("maximum occupancy is at %d threads with minimum %d grid size",
                max_block, grid);
 
   int threads = max_block;
@@ -427,7 +502,7 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
 
   int warps = threads / 32;
 
-  debug_printf("maximum warps = %d\n", warps);
+  debug("maximum warps = %d", warps);
   assert(warps >= 1);
 
   tuned_kernel result(preferred, preferred_sub);
@@ -446,8 +521,8 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   }
 
   if (has_small_dims)
-    debug_printf("expected grid (%d, %d, %d) has one or more small dimensions "
-                 "(<32 or >75%% expected waste)\n",
+    debug("expected grid (%d, %d, %d) has one or more small dimensions "
+                 "(<32 or >75%% expected waste)",
                  expected_grid.x, expected_grid.y, expected_grid.z);
 
   // dim3 sub(1, 1, 1);
@@ -458,7 +533,7 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   // Assume the initial input is 'best' until we know otherwise
   float best_eff = _occupancyForKernel(
       cf, preferred); //_est_efficiency(max_block, preferred);
-  debug_printf("base occupancy is %.2f\n", best_eff);
+  debug("base occupancy is %.2f", best_eff);
   if (best_eff > 0.99) {
     tuning[cf] = result;
     return tuning[cf];
@@ -476,7 +551,7 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   switch (max_block_dimension) {
   case 1:
     // We're done, 1D is a simple case
-    debug_printf("kernel is 1D and maximum block size is %d\n", max_block);
+    debug("kernel is 1D and maximum block size is %d", max_block);
     std::get<0>(result).x = max_block;
     break;
 
@@ -499,8 +574,8 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
     if ((small_dims[0] || small_dims[1]) &&
         _est_waste(expected_grid,
                    dim3(nearest_square, nearest_square, block.z)) > 0.2) {
-      debug_printf("remaining small dimensions would lead to excess wasted "
-                   "grid points, not trying a square\n");
+      debug("remaining small dimensions would lead to excess wasted "
+            "grid points, not trying a square");
     } else {
       next_block = dim3(
           block.x > 1 ? min(block.x, nearest_square) : nearest_square,
@@ -509,9 +584,9 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
                     max_block, next_regs, next_eff);
 
       if (next_valid) {
-        debug_printf("nearest square attempt would be %d,%d,%d "
-                     "(occupancy %.2f%%)\n",
-                     next_block.x, next_block.y, next_block.z, 100. * next_eff);
+        debug("nearest square attempt would be %d,%d,%d "
+              "(occupancy %.2f%%)",
+              next_block.x, next_block.y, next_block.z, 100. * next_eff);
 
         if (compare_options(best_eff, std::get<0>(result), next_eff, next_block)) {
           result = tuned_kernel(next_block, preferred_sub);
@@ -536,12 +611,12 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
         if (tried.find(std::make_tuple(next_block.x, next_block.y,
                                        next_block.z)) == tried.end()) {
           // next_block.x = threads / next_block.z / next_block.y;
-          debug_printf("next guess is %d,%d,%d\n", next_block.x, next_block.y,
-                       next_block.z);
+          debug("next guess is %d,%d,%d", next_block.x, next_block.y,
+                next_block.z);
           _check_kernel(next_block, preferred_sub, builder, next_valid, tmp,
                         max_block, next_regs, next_eff);
 
-          debug_printf(" (occupancy %.2f%%)\n", 100. * next_eff);
+          debug(" (occupancy %.2f%%)", 100. * next_eff);
           if (compare_options(best_eff, std::get<0>(result), next_eff,
                               next_block)) {
             if (next_valid) {
@@ -562,11 +637,11 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
     assert(false);
   }
 
-  debug_printf("selected block (%d, %d, %d), sub_block (%d, %d, %d) with est. "
-               "occupancy = %.2f\n",
-               std::get<0>(result).x, std::get<0>(result).y,
-               std::get<0>(result).z, std::get<1>(result).x,
-               std::get<1>(result).y, std::get<1>(result).z, best_eff);
+  debug("selected block (%d, %d, %d), sub_block (%d, %d, %d) with est. "
+        "occupancy = %.2f",
+        std::get<0>(result).x, std::get<0>(result).y, std::get<0>(result).z,
+        std::get<1>(result).x, std::get<1>(result).y, std::get<1>(result).z,
+        best_eff);
   tuning[cf] = result;
   return tuning[cf];
 }
