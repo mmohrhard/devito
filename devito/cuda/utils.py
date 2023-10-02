@@ -3,6 +3,8 @@ from pathlib import Path
 from devito.ir import FindSymbols, derive_parameters
 from devito.tools import filter_ordered, flatten
 
+from sympy import Mod
+
 __all__ = ["flatten_dict", "cuda_derive_parameters", "tuple_to_dim3"]
 
 
@@ -35,3 +37,12 @@ def tuple_to_dim3(grid):
 
 def get_header_include_path() -> Path:
     return Path(__file__).resolve().parent / "headers"
+
+
+def q_has_modulo(expr):
+    if isinstance(expr, Mod):
+        return True
+    elif expr.is_Atom:
+        return False
+    else:
+        return any(q_has_modulo(a) for a in expr.args)

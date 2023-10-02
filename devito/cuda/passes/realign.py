@@ -1,5 +1,6 @@
 from sympy.core.numbers import Number
 from sympy import simplify
+from devito.cuda.utils import q_has_modulo
 
 from devito.ir.iet.nodes import Expression
 from devito.ir.iet.visitors import FindNodes, Visitor
@@ -116,10 +117,17 @@ class IterationLimitTranslator(Visitor):
             return o._rebuild(*children, **o.args_frozen)
 
     def visit_Expression(self, o, **kwargs):
+        lhs = uxreplace(o.expr.lhs, self._expr_map)
+        if not q_has_modulo(lhs):
+            lhs = simplify(lhs)
+        rhs = uxreplace(o.expr.rhs, self._expr_map)
+        if not q_has_modulo(rhs):
+            rhs = simplify(rhs)
+
         return o._rebuild(
             expr=o.expr.func(
-                simplify(uxreplace(o.expr.lhs, self._expr_map)),
-                pow_to_mul(simplify(uxreplace(o.expr.rhs, self._expr_map))),
+                lhs,
+                pow_to_mul(rhs),
                 ispace=o.expr.ispace.translate(self._dim_mapper),
             )
         )
