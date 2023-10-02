@@ -9,7 +9,7 @@ import numpy as np
 from devito.arch import compiler_registry, platform_registry
 from devito.data import default_allocator
 from devito.exceptions import InvalidOperator
-from devito.logger import debug, info, perf, warning, is_log_enabled_for
+from devito.logger import operator_log, debug, info, perf, warning, is_log_enabled_for
 from devito.ir.equations import LoweredEq, lower_exprs
 from devito.ir.clusters import ClusterGroup, clusterize
 from devito.ir.iet import (Callable, CInterface, EntryFunction, FindSymbols, MetaCall,
@@ -658,6 +658,10 @@ class Operator(Callable):
             self._jit_compile()
             self._lib = self._compiler.load(self._soname)
             self._lib.name = self._soname
+            if hasattr(self._lib, "setLogHandler"):
+                setLogHandler = self._lib.setLogHandler
+                setLogHandler.argtypes = [ctypes.c_void_p]
+                setLogHandler(operatorLogCallback)
 
         if self._cfunction is None:
             self._cfunction = getattr(self._lib, self.name)
@@ -1089,3 +1093,9 @@ def parse_kwargs(**kwargs):
     )
 
     return kwargs
+
+
+@ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_char_p)
+def operatorLogCallback(level, message):
+    """ Callback from operator C/C++ code to log a message in Devito """
+    operator_log(message.decode("ascii"), level)

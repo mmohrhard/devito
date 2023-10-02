@@ -10,6 +10,8 @@ __all__ = ('set_log_level', 'set_log_noperf', 'is_log_enabled_for',
 
 
 logger = logging.getLogger('Devito')
+operator_logger = logger.getChild('operator')
+
 stream_handler = logging.StreamHandler()
 
 # Add extra logging levels (note: INFO has value=20, WARNING has value=30)
@@ -113,6 +115,23 @@ def log(msg, level=INFO, *args, **kwargs):
     """
     color = COLORS[level] if sys.stdout.isatty() and sys.stderr.isatty() else '%s'
     logger.log(level, color % msg, *args, **kwargs)
+
+
+def operator_log(msg, level=INFO, *args, **kwargs):
+    """
+    Wrapper of the main Python's logging function. Print 'msg % args' with
+    the severity 'level'.
+
+    Parameters
+    ----------
+    msg : str
+        The message to be printed.
+    level : int
+        The logging level. Accepted values are: ``DEBUG, PERF, INFO, WARNING,
+        ERROR, CRITICAL``.
+    """
+    color = COLORS[level] if sys.stdout.isatty() and sys.stderr.isatty() else '%s'
+    operator_logger.log(level, color % msg, *args, **kwargs)
 
 
 def info(msg, *args, **kwargs):
