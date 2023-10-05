@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cuda.h>
+#include <cmath>
 #include <devito/jitify.hpp>
 #include <functional>
 #include <map>
@@ -328,6 +329,7 @@ static inline int dim3_get(const dim3 &d, int rank) {
     return d.z;
 
   assert(false);
+  return -1;
 }
 
 static void dim3_set(dim3 &d, int rank, int value) {
@@ -388,12 +390,12 @@ static float _occupancyForKernel(CUfunction &k, const dim3 &block) {
   debug("max blocks per sm (thread limited) = %d", max_block_per_sm_warp);
 
   float warp_sm_reg_occupancy =
-      (32 * (float)active_warps) / (float)max_sm_threads;
+      (32.0f * (float)active_warps) / (float)max_sm_threads;
   float warp_sm_occupancy = (float)(max_block_per_sm_warp * block.x * block.y * block.z) / (float)max_sm_threads;
   float block_sm_reg_occupancy =
       ((block.x * block.y * block.z) * (float)max_block_per_sm_reg) /
       (float)max_sm_blocks;
-  return fmin(1.0, fmin(warp_sm_reg_occupancy, fmin(warp_sm_occupancy, block_sm_reg_occupancy)));
+  return fminf(1.0f, fminf(warp_sm_reg_occupancy, fminf(warp_sm_occupancy, block_sm_reg_occupancy)));
 }
 
 static bool
