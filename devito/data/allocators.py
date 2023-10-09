@@ -459,7 +459,7 @@ class CudaAllocator(MemoryAllocator):
 
         if ret == 0:
             if self.device is not None and self.device != saved_device.value:
-                self._set_device(saved_device)
+                self._set_cuda_device(saved_device)
 
             return c_pointer, (c_pointer, c_bytesize, self.type)
         else:
