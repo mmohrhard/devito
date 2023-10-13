@@ -433,9 +433,9 @@ class CudaAllocator(MemoryAllocator):
         # switch device if necessary
         if self.device is not None and self.type in [CudaAllocationType.DEVICE, CudaAllocationType.SHARED]:
             saved_device = self._current_device()
-            if self.device != saved_device.value:
+            if self.device != saved_device:
                 logger.info(
-                    f"switching from device {saved_device.value} to device {self.device}"
+                    f"switching from device {saved_device} to device {self.device}"
                     f" for allocation of size {humanbytes(size * ctypes.sizeof(ctype))}"
                 )
                 self._set_cuda_device(self.device)
@@ -458,7 +458,7 @@ class CudaAllocator(MemoryAllocator):
             raise RuntimeError(f"Invalid CUDA allocation type '{self.type}'")
 
         if ret == 0:
-            if self.device is not None and self.device != saved_device.value:
+            if self.device is not None and self.device != saved_device:
                 self._set_cuda_device(saved_device)
 
             return c_pointer, (c_pointer, c_bytesize, self.type)
@@ -486,19 +486,19 @@ class CudaAllocator(MemoryAllocator):
 
         raise RuntimeError(err_string)
 
-    def _current_device(self):
+    def _current_device(self) -> int:
         c_device = ctypes.c_int32(-1)
         ret = self.lib.cudaGetDevice(ctypes.byref(c_device))
         if ret == 0:
-            return c_device
+            return c_device.value
         else:
             self._throw_cuda_error("getting current device")
 
-    def set_device(self, device):
+    def set_device(self, device: int):
         logger.info(f"changing allocator CUDA device to {device}")
         self.device = device
 
-    def _set_cuda_device(self, device):
+    def _set_cuda_device(self, device: int):
         c_device = ctypes.c_int32(device)
         ret = self.lib.cudaSetDevice(c_device)
         if ret != 0:
