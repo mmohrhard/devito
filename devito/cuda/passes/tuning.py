@@ -30,6 +30,9 @@ def kernel_tuning(iet, **kwargs):
         else:
             non_unique += v
 
+    # this has held true for all our current operators?
+    assert len(non_unique) == 0
+
     tunes = []
     unique = sorted(unique, key=lambda x: x.name)
     non_unique = sorted(non_unique, key=lambda x: x.name)
@@ -57,31 +60,43 @@ def kernel_tuning(iet, **kwargs):
             ),
         )
         preferred_sub_block = call.preferred_sub_block or []
-        tunes.append(
-            c.Line(
-                'auto %s_tune = performTuning(_kernelTuning, "%s", %s, %s, %s, %d, %s);'
-                % (
-                    call.name,
-                    call.name,
-                    tuple_to_dim3(call.preferred_block),
-                    tuple_to_dim3(preferred_sub_block),
-                    tuple_to_dim3(call.grid),
-                    len(call.preferred_block),
-                    setup_lambda,
-                )
-            )
+
+        builder_name = "_build_" + call.name
+        tune_name = call.name + "_tune"
+        tuned_name = call.name + "_tuned"
+
+        tunes.extend(
+            [
+                c.Line(
+                    "std::function<jitify::KernelInstantiation(dim3, dim3)> %s = %s;"
+                    % (builder_name, setup_lambda)
+                ),
+                c.Line(
+                    'auto %s = performTuning(_kernelTuning, "%s", %s, %s, %s, %d, %s);'
+                    % (
+                        tune_name,
+                        call.name,
+                        tuple_to_dim3(call.preferred_block),
+                        tuple_to_dim3(preferred_sub_block),
+                        tuple_to_dim3(call.grid),
+                        len(call.preferred_block),
+                        builder_name,
+                    )
+                ),
+                c.Line(
+                    "auto %s = %s(%s, %s);"
+                    % (
+                        tuned_name,
+                        builder_name,
+                        "std::get<0>(%s)" % tune_name,
+                        "std::get<1>(%s)" % tune_name,
+                    )
+                ),
+                c.Line(),
+            ]
         )
 
-    for call in non_unique:
-        preferred_sub_block = call.preferred_sub_block or []
-        tunes.append(
-            c.Line(
-                "auto %s_tune = std::make_pair(dim3(%s), dim3(%s))));"
-                % (
-                    call.name,
-                    ",".join([str(x) for x in call.preferred_block]),
-                    ",".join([str(x) for x in preferred_sub_block]),
-                )
-            )
-        )
-    return iet._rebuild(body=iet.body._rebuild(body=flatten(tunes + [iet.body.body]))), {}
+    return (
+        iet._rebuild(body=iet.body._rebuild(body=flatten(tunes + [iet.body.body]))),
+        {},
+    )

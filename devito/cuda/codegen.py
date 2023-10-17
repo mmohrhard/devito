@@ -378,6 +378,7 @@ class MultilineCudaCall(c.Generable):
         thread_name = "threads"
         tb_name = "tb"
         tune_name = "%s_tune" % self.name
+        instantiated_name = "%s_tuned" % self.name
         yield "{"
         yield "\tdim3 %s = dim3(%s);" % (grid_name, ",".join(str(i) for i in grid))
         yield "\tdim3 %s = std::get<0>(%s);" % (thread_name, tune_name)
@@ -408,33 +409,8 @@ class MultilineCudaCall(c.Generable):
                 + ", ".join(str(i) for i in grid)
                 + ");"
             )
-        yield '\tprogram.kernel("%s", NVRTC_OPTS)' % self.name
-        tip = "\t\t.instantiate(/* thread block dimensions */ "
-        tip += ", ".join(
-            f"{thread_name}.{x[0]}" for x in zip(["x", "y", "z"], self._preferred_block)
-        )
-        if self._preferred_sub_block is not None:
-            yield tip + ","
-            tip = "\t\t/* thread inner sub block dimensions */"
-            tip += ", ".join(
-                f"{thread_name}_sub.{x[0]}"
-                for x in zip(["x", "y", "z"], self._preferred_sub_block)
-            )
-        if len(self.template_arguments) > 0:
-            yield tip + ","
-            tip = "\t\t             "
-            tip += "/* grid dimensions */ "
-            tip += ", ".join(
-                (thread_name + "." + x.lhs.name[-1])
-                if (
-                    x.lhs.name.startswith("_sub_block")
-                    or x.lhs.name.startswith("_block_")
-                )
-                else ccode(x.rhs)
-                for x in self.template_arguments
-            )
-        tip += ")"
-        yield tip
+
+        yield "\t" + instantiated_name
         yield "\t\t.configure(%s, %s, %s, %s)" % (
             grid_name,
             tb_name,

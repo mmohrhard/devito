@@ -15,11 +15,12 @@ from devito.ir import (
     Lambda,
 )
 from devito.passes.iet.parpragma import PragmaLangBB, PragmaTransfer
-from devito.symbolics import Byref, VOID, INT, CondEq
+from devito.symbolics import Byref, VOID, INT
 
 from devito.passes.iet.languages.openmp import OmpRegion, OmpIteration
 from devito.passes.iet.languages.utils import make_clause_reduction
 from devito.passes.iet.misc import is_on_device
+from devito.symbolics.extended_sympy import CondNe
 from devito.tools import filter_ordered
 from devito.types import Symbol
 from devito.cuda.nodes import (
@@ -32,7 +33,8 @@ from devito.cuda.nodes import (
     CudaAlloc,
     CudaDealloc,
 )
-from devito.cuda.types import NullPointer, JitifyCache, JitifyProgram
+from devito.cuda.types import JitifyCache, JitifyProgram
+from devito.types.parallel import DeviceID
 
 
 __all__ = ["CudaBB", "DeviceCudaIteration"]
@@ -102,12 +104,7 @@ class CudaBB(PragmaLangBB):
             "nccl.h",
             "devito/jitify.hpp",
         ],
-        "global-decls": [
-            Definition(HostStream(), initvalue="nullptr", prefix="static"),
-            Definition(MemCopyStream(), initvalue="nullptr", prefix="static"),
-            Definition(KernelStream(), initvalue="nullptr", prefix="static"),
-            Definition(NcclStream(), initvalue="nullptr", prefix="static"),
-        ],
+        "global-decls": [],
         # Platform mapping
         CUDA: None,
         NVIDIAX: None,
@@ -115,34 +112,11 @@ class CudaBB(PragmaLangBB):
         "aligned": lambda i: "__attribute__((aligned(%d)))" % i,
         "init": lambda args: List(
             body=[
-                Conditional(
-                    CondEq(HostStream(), NullPointer()),
-                    Call(
-                        "cudaStreamCreateWithFlags",
-                        (Byref(HostStream()), "cudaStreamNonBlocking"),
-                    ),
-                ),
-                Conditional(
-                    CondEq(MemCopyStream(), NullPointer()),
-                    Call(
-                        "cudaStreamCreateWithFlags",
-                        (Byref(MemCopyStream()), "cudaStreamNonBlocking"),
-                    ),
-                ),
-                Conditional(
-                    CondEq(KernelStream(), NullPointer()),
-                    Call(
-                        "cudaStreamCreateWithFlags",
-                        (Byref(KernelStream()), "cudaStreamNonBlocking"),
-                    ),
-                ),
-                Conditional(
-                    CondEq(NcclStream(), NullPointer()),
-                    Call(
-                        "cudaStreamCreateWithFlags",
-                        (Byref(NcclStream()), "cudaStreamNonBlocking"),
-                    ),
-                ),
+                Conditional(CondNe(DeviceID(), -1), Call("cudaSetDevice", (DeviceID(),))),
+                Call("ENSURE_STREAM", (HostStream(),)),
+                Call("ENSURE_STREAM", (MemCopyStream(),)),
+                Call("ENSURE_STREAM", (KernelStream(),)),
+                Call("ENSURE_STREAM", (NcclStream(),)),
                 Definition(JitifyCache("kernel_cache"), prefix="static"),
                 Definition(
                     JitifyProgram("program"),
@@ -180,7 +154,10 @@ class CudaBB(PragmaLangBB):
         "map-exit-delete-if": lambda i, j, k: None,
         "memcpy-to-device": lambda i, j, k: Call("acc_memcpy_to_device", [i, j, k]),
         "memcpy-to-device-wait": lambda i, j, k, l: Lambda(
-            body=[Call("acc_memcpy_to_device_async", [i, j, k, l]), Call("acc_wait", [l])]
+            body=[
+                Call("acc_memcpy_to_device_async", [i, j, k, l]),
+                Call("acc_wait", [l]),
+            ]
         ),
         "device-get":
         # calls a helper function since we expect a return value
