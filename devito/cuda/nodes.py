@@ -596,8 +596,8 @@ class CudaHostFuncCall(AsyncCall):
 
 
 class CudaHostFuncLaunchCall(Call):
-    def __init__(self, stream=None, name=None, param=None):
-        super().__init__(name)
+    def __init__(self, stream=None, name=None, param=None, arguments=None):
+        super().__init__(name, arguments=arguments)
         self._stream = stream
         self._param = param
 
