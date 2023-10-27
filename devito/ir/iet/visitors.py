@@ -13,14 +13,17 @@ from sympy import IndexedBase
 
 from devito.exceptions import VisitorException
 from devito.ir.iet.nodes import (Node, Iteration, Expression, ExpressionBundle,
-                                 Call, Lambda, BlankLine, Section)
+                                 Call, Lambda, BlankLine, Section, AddressOf,
+                                 CLiteral, List)
+from devito.ir.equations import OpInc
 from devito.ir.support.space import Backward
-from devito.symbolics import ccode, uxreplace
+from devito.symbolics import ccode, uxreplace, CondAnd
 from devito.tools import GenericVisitor, as_tuple, filter_ordered, filter_sorted, flatten
 from devito.types.basic import AbstractFunction, Basic
 from devito.types import (ArrayObject, CompositeObject, Dimension, Pointer,
                           IndexedData, DeviceMap)
 
+import numpy as np
 
 __all__ = ['FindNodes', 'FindSections', 'FindSymbols', 'MapExprStmts', 'MapNodes',
            'IsPerfectIteration', 'printAST', 'CGen', 'CInterface', 'Transformer',
@@ -75,6 +78,12 @@ class PrintAST(Visitor):
 
     def visit_Node(self, o):
         return self.indent + '<%s>' % o.__class__.__name__
+
+    def visit_AddressOf(self, o):
+        self._depth += 1
+        body = self._visit(o.child)
+        self._depth -= 1
+        return self.indent + '<AddressOf>\n%s' % (body)
 
     def visit_Generable(self, o):
         body = ' %s' % str(o) if self.verbose else ''
@@ -172,26 +181,30 @@ class CGen(Visitor):
     def _args_decl(self, args):
         """Generate cgen declarations from an iterable of symbols and expressions."""
         ret = []
-        for i in args:
+        for i in filter_ordered(args):
             if isinstance(i, (AbstractFunction, IndexedData)):
-                ret.append(c.Value('%srestrict' % i._C_typename, i._C_name))
+                ret.append(c.Value('%s __restrict' % i._C_typename, i._C_name))
             elif i.is_AbstractObject or i.is_Symbol:
                 ret.append(c.Value(i._C_typename, i._C_name))
-            else:
+            elif not i._C_typedata == "cudaStream_t":
                 ret.append(c.Value('void', '*_%s' % i._C_name))
         return ret
+
+
 
     def _args_call(self, args):
         """
         Generate cgen function call arguments from an iterable of symbols and expressions.
         """
         ret = []
-        for i in args:
+        for i in filter_ordered(args):
             try:
                 if isinstance(i, Call):
                     ret.append(self._visit(i, nested_call=True))
                 elif isinstance(i, Lambda):
                     ret.append(self._visit(i))
+                elif isinstance(i, AddressOf):
+                    ret.append('&%s' % (i.child._C_name))
                 else:
                     ret.append(i._C_name)
             except AttributeError:
@@ -238,6 +251,10 @@ class CGen(Visitor):
     def visit_tuple(self, o):
         return tuple(self._visit(i) for i in o)
 
+    def visit_AddressOf(self, o):
+        rvalue = self.visit(o.child)
+        return '&%s' % (rvalue)
+
     def visit_PointerCast(self, o):
         f = o.function
         i = f.indexed
@@ -264,7 +281,7 @@ class CGen(Visitor):
             if o.flat is None:
                 shape = ''.join("[%s]" % ccode(i) for i in o.castshape)
                 rshape = '(*)%s' % shape
-                lvalue = c.Value(i._C_typedata, '(*restrict %s)%s' % (v, shape))
+                lvalue = c.Value(i._C_typedata, '(*__restrict %s)%s' % (v, shape))
             else:
                 rshape = '*'
                 lvalue = c.Value(i._C_typedata, '*%s' % v)
@@ -302,12 +319,12 @@ class CGen(Visitor):
                                                 a1.dim.name)
                 lvalue = c.AlignedAttribute(
                     a0._data_alignment,
-                    c.Value(i._C_typedata, '(*restrict %s)%s' % (a0.name, shape))
+                    c.Value(i._C_typedata, '(*__restrict %s)%s' % (a0.name, shape))
                 )
             else:
                 rvalue = '(%s *) %s[%s]' % (i._C_typedata, a1.name, a1.dim.name)
                 lvalue = c.AlignedAttribute(
-                    a0._data_alignment, c.Value(i._C_typedata, '*restrict %s' % a0.name)
+                    a0._data_alignment, c.Value(i._C_typedata, '*__restrict %s' % a0.name)
                 )
         else:
             rvalue = '%s->%s' % (a1.name, a0._C_name)
@@ -338,6 +355,9 @@ class CGen(Visitor):
             v += ' %s' % o.value
         return c.Statement(v)
 
+    def visit_CLiteral(self, o):
+        return c.Line(o.value)
+
     def visit_Definition(self, o):
         f = o.function
 
@@ -364,6 +384,9 @@ class CGen(Visitor):
             except ValueError:
                 v = c.Value(f._C_typename, v)
 
+        if o.prefix is not None:
+            v.typename = o.prefix + " " + v.typename
+
         if o.initvalue is not None:
             v = c.Initializer(v, o.initvalue)
 
@@ -383,6 +406,7 @@ class CGen(Visitor):
 
         return code
 
+
     def visit_AugmentedExpression(self, o):
         code = c.Statement("%s %s= %s" % (ccode(o.expr.lhs, dtype=o.dtype), o.op,
                            ccode(o.expr.rhs, dtype=o.dtype)))
@@ -398,7 +422,11 @@ class CGen(Visitor):
             return MultilineCall(o.name, arguments, nested_call, o.is_indirect, cast)
         else:
             call = MultilineCall(o.name, arguments, True, o.is_indirect, cast)
-            return c.Initializer(c.Value(retobj._C_typename, retobj._C_name), call)
+            lvalue = c.Value(retobj._C_typename, retobj._C_name)
+            if o.declares:
+                return c.Initializer(lvalue, call)
+            else:
+                return c.Assign(retobj._C_name, call)
 
     def visit_Conditional(self, o):
         try:
@@ -472,6 +500,7 @@ class CGen(Visitor):
         signature = c.FunctionDeclaration(c.Value(prefix, o.name), decls)
         return c.FunctionBody(signature, c.Block(body))
 
+
     def visit_CallableBody(self, o):
         body = []
         prev = None
@@ -482,6 +511,7 @@ class CGen(Visitor):
                     body.append(c.Line())
                 prev = v
                 body.extend(as_tuple(v))
+
         return c.Collection(body)
 
     def visit_Lambda(self, o):
@@ -538,11 +568,14 @@ class CGen(Visitor):
             if i.local:
                 prefix = ' '.join(i.root.prefix + (i.root.retval,))
                 esigns.append(c.FunctionDeclaration(c.Value(prefix, i.root.name),
-                                                    self._args_decl(i.root.parameters)))
+                                                        self._args_decl(i.root.parameters)))
                 efuncs.extend([self._visit(i.root), blankline])
 
         # Definitions
         headers = [c.Define(*i) for i in o._headers] + [blankline]
+
+        # Global scoped code
+        global_code = [self._visit(List(body=o._globals))] + [blankline]
 
         # Header files
         includes = self._operator_includes(o) + [blankline]
@@ -554,7 +587,7 @@ class CGen(Visitor):
         typedecls = [i for j in typedecls for i in (j, blankline)]
 
         return c.Module(headers + includes + typedecls +
-                        esigns + [blankline, kernel] + efuncs)
+                        global_code + esigns + [blankline, kernel] + efuncs)
 
 
 class CInterface(CGen):
@@ -775,7 +808,7 @@ class FindSymbols(Visitor):
         'defines-aliases': lambda n: as_tuple(flatten(i._C_aliases for i in n.defines)),
     }
 
-    def __init__(self, mode='symbolics'):
+    def __init__(self, mode='symbolics', stop_filter=None):
         super().__init__()
 
         modes = mode.split('|')
@@ -784,16 +817,21 @@ class FindSymbols(Visitor):
         else:
             self.rule = lambda n: chain(*[self.rules[mode](n) for mode in modes])
 
+        if stop_filter:
+            self.stop_filter = stop_filter
+        else:
+            self.stop_filter = lambda n: False
+
     def _post_visit(self, ret):
-        return sorted(ret, key=lambda i: i.name)
+        return sorted(ret, key=lambda i: i.name if hasattr(i, 'name') else str(i))
 
     def visit_tuple(self, o):
-        return self.Retval(*[self._visit(i) for i in o])
+        return self.Retval(*[self._visit(i) for i in o if not self.stop_filter(i)])
 
     visit_list = visit_tuple
 
     def visit_Node(self, o):
-        return self.Retval(self._visit(o.children), self.rule(o))
+        return self.Retval(*[self._visit(n) for n in o.children if not self.stop_filter(n)], self.rule(o))
 
     def visit_Operator(self, o):
         ret = self._visit(o.body)
@@ -1061,3 +1099,5 @@ class MultilineCall(c.Generable):
         if self.cast:
             tip = '(%s)%s' % (self.cast, tip)
         yield tip
+
+default_generator = CGen

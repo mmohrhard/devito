@@ -10,6 +10,7 @@ from devito.passes.clusters import (Lift, Streaming, Tasker, blocking, buffering
                                     optimize_pows)
 from devito.passes.iet import (DeviceOmpTarget, DeviceAccTarget, mpiize, hoist_prodders,
                                is_on_device, linearize, pthreadify, relax_incr_dimensions)
+
 from devito.tools import as_tuple, timed_pass
 
 __all__ = ['DeviceNoopOperator', 'DeviceAdvOperator', 'DeviceCustomOperator',
@@ -96,6 +97,7 @@ class DeviceOperatorMixin(object):
         o['cire-ftemps'] = oo.pop('cire-ftemps', False)
         o['cire-mingain'] = oo.pop('cire-mingain', cls.CIRE_MINGAIN)
         o['cire-schedule'] = oo.pop('cire-schedule', cls.CIRE_SCHEDULE)
+        o['cire-aggressive'] = oo.pop('cire-aggressive', False)
 
         # GPU parallelism
         o['par-tile'] = ParTile(oo.pop('par-tile', False), default=(32, 4))
@@ -106,6 +108,7 @@ class DeviceOperatorMixin(object):
         o['par-nested'] = np.inf  # Never use nested parallelism
         o['par-disabled'] = oo.pop('par-disabled', True)  # No host parallelism by default
         o['gpu-fit'] = as_tuple(oo.pop('gpu-fit', cls._normalize_gpu_fit(**kwargs)))
+        o['gpu-nofit'] = as_tuple(oo.pop('gpu-nofit', None))
 
         # Misc
         o['optcomms'] = oo.pop('optcomms', True)
@@ -227,7 +230,8 @@ class DeviceAdvOperator(DeviceOperatorMixin, CoreOperator):
         cls._Target.DataManager(sregistry, options).process(graph)
 
         # Linearize n-dimensional Indexeds
-        linearize(graph, mode=options['linearize'], sregistry=sregistry)
+        linearizer = cls._Target.Linearizer
+        linearizer(graph, mode=options['linearize'], sregistry=sregistry)
 
         return graph
 
@@ -270,6 +274,7 @@ class DeviceCustomOperator(DeviceOperatorMixin, CustomOperator):
         return {
             'buffering': lambda i: buffering(i, callback, sregistry, options),
             'blocking': lambda i: blocking(i, sregistry, options),
+            'cuda-memcpy': lambda i: cuda_memcpy(i, sregistry=sregistry),
             'tasking': Tasker(runs_on_host, sregistry).process,
             'streaming': Streaming(reads_if_on_host, sregistry).process,
             'factorize': factorize,
@@ -419,7 +424,7 @@ def make_callbacks(options):
     """
 
     def is_on_host(f):
-        return not is_on_device(f, options['gpu-fit'])
+        return not is_on_device(f, options['gpu-fit'], options['gpu-nofit'])
 
     def runs_on_host(c):
         # The only situation in which a Cluster doesn't get offloaded to

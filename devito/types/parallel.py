@@ -22,7 +22,8 @@ from devito.types.misc import Pointer, VolatileInt
 
 __all__ = ['NThreads', 'NThreadsNested', 'NThreadsNonaffine', 'NThreadsBase',
            'DeviceID', 'ThreadID', 'Lock', 'PThreadArray', 'SharedData',
-           'NPThreads', 'DeviceRM', 'UpdateHost', 'DevicePointer', 'QueueID']
+           'NPThreads', 'DeviceCreate', 'DeviceRM', 'UpdateHost', 'UpdateDevice',
+           'DevicePointer', 'QueueID']
 
 
 class NThreadsBase(Scalar):
@@ -230,7 +231,7 @@ class Lock(Array):
     def locked_dimensions(self):
         return set().union(*[d._defines for d in self.dimensions])
 
-
+    
 class DeviceSymbol(Scalar):
 
     is_Input = True
@@ -253,6 +254,22 @@ class DeviceID(DeviceSymbol):
     @property
     def default_value(self):
         return -1
+
+
+class DeviceCreate(DeviceSymbol):
+
+    name = 'devicecreate'
+
+    @property
+    def default_value(self):
+        return 1
+
+    def _arg_values(self, **kwargs):
+        try:
+            # Enforce 1 or 0
+            return {self.name: int(bool(kwargs[self.name]))}
+        except KeyError:
+            return self._arg_defaults()
 
 
 class DeviceRM(DeviceSymbol):
@@ -284,6 +301,22 @@ class UpdateHost(DeviceSymbol):
             return {self.name: int(bool(kwargs[self.name]))}
         except KeyError:
             return self._arg_defaults()
+
+class UpdateDevice(DeviceSymbol):
+
+    name = 'updatedevice'
+
+    @property
+    def default_value(self):
+        return 1
+
+    def _arg_values(self, **kwargs):
+        try:
+            # Enforce 1 or 0
+            return {self.name: int(bool(kwargs[self.name]))}
+        except KeyError:
+            return self._arg_defaults()
+
 
 class QueueID(Symbol):
 

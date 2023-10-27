@@ -70,4 +70,6 @@ setup(name='devito',
       license='MIT',
       packages=find_packages(exclude=exclude),
       install_requires=reqs,
-      extras_require=extras_require)
+      extras_require=extras_require,
+      include_package_data=True,
+)

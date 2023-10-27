@@ -18,15 +18,15 @@ from devito.symbolics import ListInitializer, CallFromPointer, ccode
 from devito.tools import Signer, Tag, as_tuple, filter_ordered, filter_sorted, flatten
 from devito.types.basic import AbstractFunction, AbstractSymbol
 from devito.types.object import AbstractObject
-from devito.types import Indexed, Symbol
+from devito.types import Indexed, Symbol, Global
 
 __all__ = ['Node', 'Block', 'Expression', 'Callable', 'Call',
            'Conditional', 'Iteration', 'List', 'Section', 'TimedList', 'Prodder',
            'MetaCall', 'PointerCast', 'HaloSpot', 'Definition', 'ExpressionBundle',
-           'AugmentedExpression', 'Increment', 'Return', 'While',
+           'AugmentedExpression', 'Increment', 'Return', 'While', 'DeviceCall', 'DeviceFunction',
            'ParallelIteration', 'ParallelBlock', 'Dereference', 'Lambda',
            'SyncSpot', 'Pragma', 'DummyExpr', 'BlankLine', 'ParallelTree',
-           'BusyWait', 'CallableBody', 'Transfer', 'HPtr', 'DPtr']
+           'BusyWait', 'CallableBody', 'Transfer', 'HPtr', 'DPtr', 'AddressOf', 'CLiteral']
 
 # First-class IET nodes
 
@@ -34,6 +34,7 @@ __all__ = ['Node', 'Block', 'Expression', 'Callable', 'Call',
 class Node(Signer):
 
     __metaclass__ = abc.ABCMeta
+    _CodeGen = None
 
     is_Block = False
     is_Iteration = False
@@ -48,6 +49,7 @@ class Node(Signer):
     is_Definition = False
     is_PointerCast = False
     is_Dereference = False
+    is_Reference = False
     is_Section = False
     is_HaloSpot = False
     is_ExpressionBundle = False
@@ -94,7 +96,10 @@ class Node(Signer):
               CGen().visit(self)
         """
         from devito.ir.iet.visitors import CGen
-        return CGen().visit(self)
+        if self._CodeGen:
+            return self._CodeGen().visit(self)
+        else:
+            return CGen().visit(self)
 
     @property
     def view(self):
@@ -247,7 +252,7 @@ class Call(ExprStmt, Node):
     is_Call = True
 
     def __init__(self, name, arguments=None, retobj=None, is_indirect=False,
-                 cast=False, writes=None, types=None):
+                 cast=False, writes=None, types=None, declares=True):
         if isinstance(name, CallFromPointer):
             self.base = name.base
         else:
@@ -259,6 +264,7 @@ class Call(ExprStmt, Node):
         self.cast = cast
         self._writes = as_tuple(writes)
         self.types = as_tuple(types)
+        self.declares=declares
 
         # Sanity check
         assert not self.types or len(self.types) == len(self.arguments)
@@ -279,21 +285,27 @@ class Call(ExprStmt, Node):
                 retval.append(i.function)
             elif isinstance(i, Call):
                 retval.extend(i.functions)
-            else:
+            elif not isinstance(i, Global):
                 try:
                     v = i.free_symbols
                 except AttributeError:
                     continue
-                for s in v:
-                    try:
-                        # `try-except` necessary for e.g. Macro
-                        if isinstance(s.function, (AbstractFunction, AbstractObject)):
-                            retval.append(s.function)
-                    except AttributeError:
-                        continue
+
+                try:
+                    for s in v:
+                        try:
+                            # `try-except` necessary for e.g. Macro
+                            if isinstance(s.function, (AbstractFunction, AbstractObject)):
+                                retval.append(s.function)
+                        except AttributeError:
+                            continue
+                except TypeError:
+                    print(f"{v} is not an iterable on {self.name} argument {i} (of {self.arguments})")
         if self.base is not None:
             retval.append(self.base.function)
         if self.retobj is not None:
+            if not  hasattr(self.retobj, "function"):
+                print("huh")
             retval.append(self.retobj.function)
         return tuple(filter_ordered(retval))
 
@@ -351,11 +363,12 @@ class Expression(ExprStmt, Node):
 
     is_Expression = True
 
-    def __init__(self, expr, pragmas=None, init=False, operation=None):
+    def __init__(self, expr=None, pragmas=None, init=False, operation=None, atomic=False):
         self.expr = expr
         self.pragmas = as_tuple(pragmas)
         self.init = init
         self.operation = operation
+        self.atomic = atomic
 
     def __repr__(self):
         return "<%s::%s>" % (self.__class__.__name__,
@@ -409,6 +422,13 @@ class Expression(ExprStmt, Node):
                 (self.is_tensor and isinstance(self.expr.rhs, ListInitializer)))
 
     @property
+    def is_atomic(self):
+        """
+        True if this Expression should write its output atomically
+        """
+        return self.atomic
+    
+    @property
     def defines(self):
         return (self.output.base,) if self.is_initializable else ()
 
@@ -432,8 +452,8 @@ class AugmentedExpression(Expression):
 
     """A node representing an augmented assignment, such as +=, -=, &=, ...."""
 
-    def __init__(self, expr, pragmas=None, operation=None):
-        super().__init__(expr, pragmas=pragmas, operation=operation)
+    def __init__(self, expr, pragmas=None, operation=None, atomic=False):
+        super().__init__(expr, pragmas=pragmas, operation=operation, atomic=atomic)
 
     @property
     def is_initializable(self):
@@ -453,8 +473,8 @@ class Increment(AugmentedExpression):
 
     """Shortcut for ``AugmentedExpression(expr, '+'), since it's so widely used."""
 
-    def __init__(self, expr, pragmas=None):
-        super().__init__(expr, pragmas=pragmas, operation=OpInc)
+    def __init__(self, expr, pragmas=None, atomic=False):
+        super().__init__(expr, pragmas=pragmas, operation=OpInc, atomic=atomic)
 
 
 class Iteration(Node):
@@ -707,6 +727,9 @@ class CallableBody(Node):
     init : Node, optional
         A piece of IET to perform some initialization relevant for `body`
         (e.g., to initialize the target language runtime).
+    fini : Node, optional
+        A piece of IET to perform some finalization relevant for `body`
+        (e.g., to finalize the target language runtime).
     allocs : list of Nodes, optional
         Data definitions and allocations for `body`.
     casts : list of PointerCasts, optional
@@ -725,10 +748,10 @@ class CallableBody(Node):
     is_CallableBody = True
 
     _traversable = ['unpacks', 'init', 'allocs', 'casts', 'maps', 'objs',
-                    'body', 'unmaps', 'frees']
+                    'body', 'unmaps', 'frees', 'fini']
 
     def __init__(self, body, init=None, unpacks=None, allocs=None, casts=None,
-                 objs=None, maps=None, unmaps=None, frees=None):
+                 objs=None, maps=None, unmaps=None, frees=None, fini=None):
         # Sanity check
         assert not isinstance(body, CallableBody), "CallableBody's cannot be nested"
 
@@ -741,6 +764,7 @@ class CallableBody(Node):
         self.objs = as_tuple(objs)
         self.unmaps = as_tuple(unmaps)
         self.frees = as_tuple(frees)
+        self.fini = as_tuple(fini)
 
     def __repr__(self):
         return ("<CallableBody <unpacks=%d, allocs=%d, casts=%d, maps=%d, "
@@ -748,7 +772,6 @@ class CallableBody(Node):
                 (len(self.unpacks), len(self.allocs), len(self.casts),
                  len(self.maps), len(self.objs), len(self.unmaps),
                  len(self.frees)))
-
 
 class Conditional(Node):
 
@@ -857,11 +880,12 @@ class Definition(ExprStmt, Node):
     is_Definition = True
 
     def __init__(self, function, shape=None, qualifier=None, initvalue=None,
-                 cargs=None):
+                 cargs=None, prefix=None):
         self.function = function
         self.shape = shape
         self.qualifier = qualifier
         self.initvalue = initvalue
+        self.prefix = prefix
         self.cargs = as_tuple(cargs)
 
     def __repr__(self):
@@ -1132,6 +1156,7 @@ class ParallelIteration(Iteration):
 
     def __init__(self, *args, **kwargs):
         pragmas, kwargs, properties = self._make_header(**kwargs)
+        kwargs.pop("qid", None)
         super().__init__(*args, pragmas=pragmas, properties=properties, **kwargs)
 
     @classmethod
@@ -1322,6 +1347,29 @@ def DummyExpr(*args, init=False):
 
 BlankLine = CBlankLine()
 
+class CLiteral(Node):
+    """
+    A literal block of C code, for things that don't really fit anywhere else
+    """
+    def __init__(self, value=None):
+        self.value = value
+
+class AddressOf(Node):
+
+    is_Reference = True
+
+    _traversable = ['child']
+
+    def __init__(self, child=None):
+       self._child = child
+
+    def __repr__(self):
+        return "<AddressOf (%s)>" % str(self._child)
+
+    @property
+    def child(self):
+        return self._child
+    
 
 # Nodes required for distributed-memory halo exchange
 
@@ -1403,3 +1451,22 @@ class CallArgType(Tag):
 
 HPtr = CallArgType('host pointer')
 DPtr = CallArgType('device pointer')
+
+
+class DeviceFunction(Callable):
+
+    """
+    A Callable executed asynchronously on a device.
+    """
+
+    def __init__(self, name, body, retval='void', parameters=None, prefix='__global__'):
+        super().__init__(name, body, retval, parameters=parameters, prefix=prefix)
+
+
+class DeviceCall(Call):
+
+    """
+    A call to an external function executed asynchronously on a device.
+    """
+
+    pass

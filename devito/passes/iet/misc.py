@@ -129,7 +129,7 @@ def relax_incr_dimensions(iet, **kwargs):
     return iet, {'headers': headers}
 
 
-def is_on_device(obj, gpu_fit):
+def is_on_device(obj, gpu_fit, gpu_nofit=list()):
     """
     True if the given object is allocated in the device memory, False otherwise.
 
@@ -141,6 +141,10 @@ def is_on_device(obj, gpu_fit):
         The Function's which are known to definitely fit in the device memory. This
         information is given directly by the user through the compiler option
         `gpu-fit` and is propagated down here through the various stages of lowering.
+    gpu_nofit : list of Function
+        Functions which are known to definitely not fit in the device memory. This
+        information is given directly by the user through the compiler option
+        `gpu-nofit` and is propagated down here through the various stages of lowering.
     """
     functions = (obj.function,)
     fsave = [f for f in functions
@@ -150,4 +154,4 @@ def is_on_device(obj, gpu_fit):
         warning("TimeFunction %s assumed to fit the GPU memory" % fsave)
         return True
 
-    return all(f in gpu_fit for f in fsave)
+    return all((f in gpu_fit) for f in fsave) and all(f not in gpu_nofit for f in functions)

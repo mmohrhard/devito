@@ -264,7 +264,7 @@ class PragmaShmTransformer(PragmaSimdTransformer):
             mapper = {partree.root: partree.root._rebuild(reduction=reductions)}
         elif all(i is OpInc for _, i in reductions):
             # Use atomic increments
-            mapper = {i: i._rebuild(pragmas=self.lang['atomic']) for i in exprs}
+            mapper = {i: i._rebuild(pragmas=self.lang['atomic'], atomic=True) for i in exprs}
         else:
             raise NotImplementedError
 
@@ -425,7 +425,7 @@ class PragmaShmTransformer(PragmaSimdTransformer):
 
         iet = Transformer(mapper).visit(iet)
 
-        return iet, {'includes': [self.lang['header']]}
+        return iet, {'includes': self.lang['headers']}
 
     @iet_pass
     def make_parallel(self, iet):
@@ -489,6 +489,7 @@ class PragmaDeviceAwareTransformer(DeviceAwareMixin, PragmaShmTransformer):
         super().__init__(sregistry, options, platform, compiler)
 
         self.gpu_fit = options['gpu-fit']
+        self.gpu_nofit = options['gpu-nofit']
         self.par_tile = options['par-tile']
         self.par_disabled = options['par-disabled']
 
@@ -499,7 +500,7 @@ class PragmaDeviceAwareTransformer(DeviceAwareMixin, PragmaShmTransformer):
         else:
             return super()._make_threaded_prodders(partree)
 
-    def _make_partree(self, candidates, nthreads=None):
+    def _make_partree(self, candidates, nthreads=None, qid=None):
         """
         Parallelize the `candidates` Iterations. In particular:
 
@@ -518,6 +519,7 @@ class PragmaDeviceAwareTransformer(DeviceAwareMixin, PragmaShmTransformer):
         if self._is_offloadable(root):
             body = self.DeviceIteration(gpu_fit=self.gpu_fit,
                                         ncollapse=len(collapsable) + 1,
+                                        qid=qid,
                                         **root.args)
             partree = ParallelTree([], body, nthreads=nthreads)
 

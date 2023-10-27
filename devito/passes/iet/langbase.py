@@ -217,6 +217,7 @@ class DeviceAwareMixin(object):
 
     @iet_pass
     def initialize(self, iet, options=None):
+        from devito.cuda.nodes import CudaHostFuncCallable
         """
         An `iet_pass` which transforms an IET such that the target language
         runtime is initialized.
@@ -268,9 +269,14 @@ class DeviceAwareMixin(object):
 
             try:
                 lang_init = [self.lang['init'](devicetype)]
-            except TypeError:
+            except Exception:
                 # Not all target languages need to be explicitly initialized
                 lang_init = []
+
+            try:
+                lang_fini = [self.lang['fini'](devicetype)]
+            except Exception:
+                lang_fini = []
 
             if objcomm is not None:
                 rank = Symbol(name='rank')
@@ -300,10 +306,16 @@ class DeviceAwareMixin(object):
                 footer = c.Comment('End of %s setup' % self.lang['name'])
 
             init = List(header=header, body=body, footer=footer)
-            iet = iet._rebuild(body=iet.body._rebuild(init=init))
+            fini = List(body=lang_fini)
+            iet = iet._rebuild(body=iet.body._rebuild(init=init, fini=fini))
 
             return iet, {}
 
+        # CUDA host functions must not call CUDA runtime API, including the cudaSetDevice call.
+        @_initialize.register(CudaHostFuncCallable)
+        def _(iet):
+            return iet, {}
+        
         @_initialize.register(AsyncCallable)
         def _(iet):
             devicetype = as_list(self.lang[self.platform])
@@ -324,12 +336,12 @@ class DeviceAwareMixin(object):
         True if the IET computation is offloadable to device, False otherwise.
         """
         expressions = FindNodes(Expression).visit(iet)
-        if any(not is_on_device(e.write, self.gpu_fit) for e in expressions):
+        if any(not is_on_device(e.write, self.gpu_fit, self.gpu_nofit) for e in expressions):
             return False
 
         functions = FindSymbols().visit(iet)
         buffers = [f for f in functions if f.is_Array and f._mem_mapped]
-        hostfuncs = [f for f in functions if not is_on_device(f, self.gpu_fit)]
+        hostfuncs = [f for f in functions if not is_on_device(f, self.gpu_fit, self.gpu_nofit)]
         return not (buffers and hostfuncs)
 
 

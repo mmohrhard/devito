@@ -1,4 +1,4 @@
-from ctypes import POINTER, Structure, c_void_p, c_ulong
+from ctypes import POINTER, Structure, c_int, c_void_p, c_ulong
 from math import ceil
 
 import numpy as np
@@ -221,9 +221,13 @@ class ArrayMapped(Array):
     _C_field_data = 'data'
     _C_field_nbytes = 'nbytes'
     _C_field_dmap = 'dmap'
+    _C_field_device_data = 'device_data'
+    _C_field_operator_allocated = 'operator_allocated'
 
     _C_ctype = POINTER(type(_C_structname, (Structure,),
                             {'_fields_': [(_C_field_data, c_restrict_void_p),
+                                          (_C_field_device_data, c_restrict_void_p),
+                                          (_C_field_operator_allocated, c_int),
                                           (_C_field_nbytes, c_ulong),
                                           (_C_field_dmap, c_void_p)]}))
 

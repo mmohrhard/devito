@@ -32,6 +32,7 @@ class Graph(object):
 
         self.includes = []
         self.headers = []
+        self.globals = []
 
     @property
     def root(self):
@@ -53,6 +54,7 @@ class Graph(object):
 
             self.includes.extend(as_tuple(metadata.get('includes')))
             self.headers.extend(as_tuple(metadata.get('headers')))
+            self.globals.extend(as_tuple(metadata.get('globals')))
 
             # Update jit-compiler if necessary
             try:
@@ -82,6 +84,7 @@ class Graph(object):
         # Uniqueness
         self.includes = filter_ordered(self.includes)
         self.headers = filter_ordered(self.headers, key=str)
+        self.globals = filter_ordered(self.globals, key=str)
 
     def visit(self, func, **kwargs):
         """
@@ -159,6 +162,7 @@ def create_call_graph(root, efuncs):
 
 
 def reuse_efuncs(root, efuncs):
+    from devito.cuda.nodes import CudaCallable
     """
     Generalise `efuncs` so that syntactically identical Callables may be dropped,
     thus maximizing code reuse.
@@ -186,6 +190,11 @@ def reuse_efuncs(root, efuncs):
     mapper = {}
     for i in dag.topological_sort():
         if i == root.name:
+            continue
+
+        # For now, we keep all GPU kernels
+        if isinstance(efuncs[i], CudaCallable):
+            mapper[efuncs[i]._signature()] = (efuncs[i], [efuncs[i]])
             continue
 
         efunc = efuncs[i]

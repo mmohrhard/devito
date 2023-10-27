@@ -267,6 +267,7 @@ class Data(np.ndarray):
 
     @_check_idx
     def __setitem__(self, glb_idx, val, comm_type):
+        from devito.mpi import safe_Bcast
         loc_idx = self._index_glb_to_loc(glb_idx)
         if loc_idx is NONLOCAL:
             # no-op
@@ -290,7 +291,9 @@ class Data(np.ndarray):
                 data_global = []
                 idx_global = []
                 for j in range(nprocs):
-                    data_global.append(comm.bcast(np.array(val), root=j))
+                    v = np.array(val)
+                    safe_Bcast(comm, v, root=j)
+                    data_global.append(v)
                     idx_global.append(comm.bcast(idx, root=j))
                 # Set the data:
                 for j in range(nprocs):

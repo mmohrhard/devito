@@ -28,7 +28,7 @@ def linearize(graph, **kwargs):
     linearization(graph, track=track, **kwargs)
 
     # Sanity check
-    assert all(not v.held for v in track.values())
+    assert all(not v.held or len(v.held) == 0 for v in track.values())
 
 
 @iet_pass

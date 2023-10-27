@@ -9,7 +9,7 @@ import numpy as np
 from devito.arch import compiler_registry, platform_registry
 from devito.data import default_allocator
 from devito.exceptions import InvalidOperator
-from devito.logger import debug, info, perf, warning, is_log_enabled_for
+from devito.logger import operator_log, debug, info, perf, warning, is_log_enabled_for
 from devito.ir.equations import LoweredEq, lower_exprs
 from devito.ir.clusters import ClusterGroup, clusterize
 from devito.ir.iet import (Callable, CInterface, EntryFunction, FindSymbols, MetaCall,
@@ -181,6 +181,7 @@ class Operator(Callable):
         op._headers = list(cls._default_headers)
         op._headers.extend(byproduct.headers)
         op._globals = list(cls._default_globals)
+        op._globals.extend(byproduct.globals)
         op._includes = list(cls._default_includes)
         op._includes.extend(profiler._default_includes)
         op._includes.extend(byproduct.includes)
@@ -207,6 +208,7 @@ class Operator(Callable):
         op._state = cls._initialize_state(**kwargs)
 
         # Produced by the various compilation passes
+        op._reads = filter_sorted(flatten(e.reads for e in irs.expressions))
         op._input = filter_sorted(flatten(e.reads + e.writes for e in irs.expressions))
         op._output = filter_sorted(flatten(e.writes for e in irs.expressions))
         op._dimensions = set().union(*[e.dimensions for e in irs.expressions])
@@ -467,6 +469,10 @@ class Operator(Callable):
 
     # Arguments processing
 
+    @cached_property
+    def reads(self):
+        return tuple(self._reads)
+    
     def _prepare_arguments(self, autotune=None, **kwargs):
         """
         Process runtime arguments passed to ``.apply()` and derive
@@ -482,8 +488,17 @@ class Operator(Callable):
 
         # Process data-carrier overrides
         args = kwargs['args'] = ReducerMap()
+
+        reads = self.reads
+        writes = self.output
+
         for p in overrides:
-            args.update(p._arg_values(**kwargs))
+            r = True if p.name in [r.name for r in reads] else False
+            w = True if p.name in [w.name for w in writes] else False
+            
+            args.update(p._arg_values(**kwargs, 
+                                      read = r,
+                                      write = w))
             try:
                 args.reduce_inplace()
             except ValueError:
@@ -494,7 +509,9 @@ class Operator(Callable):
             if p.name in args:
                 # E.g., SubFunctions
                 continue
-            for k, v in p._arg_values(**kwargs).items():
+            for k, v in p._arg_values(**kwargs, 
+                                      read = True if p.name in [r.name for r in reads] else False,
+                                      write = True if p.name in [w.name for w in writes] else False).items():
                 if k in args and args[k] != v:
                     raise ValueError("Default `%s` is incompatible with other args as "
                                      "`%s=%s`, while `%s=%s` is expected. Perhaps you "
@@ -509,7 +526,9 @@ class Operator(Callable):
         discretizations.update({getattr(p, 'grid', None) for p in defaults})
         discretizations.discard(None)
         for i in discretizations:
-            args.update(i._arg_values(**kwargs))
+            args.update(i._arg_values(**kwargs,
+                                      read = True if p.name in [r.name for r in reads] else False,
+                                      write = True if p.name in [w.name for w in writes] else False))
 
         # There can only be one Grid from which DiscreteFunctions were created
         grids = {i for i in discretizations if isinstance(i, Grid)}
@@ -610,7 +629,7 @@ class Operator(Callable):
     @cached_property
     def _soname(self):
         """A unique name for the shared object resulting from JIT compilation."""
-        return Signer._digest(self, configuration)
+        return self.name + "_" + Signer._digest(self, configuration)
 
     def _jit_compile(self):
         """
@@ -639,6 +658,10 @@ class Operator(Callable):
             self._jit_compile()
             self._lib = self._compiler.load(self._soname)
             self._lib.name = self._soname
+            if hasattr(self._lib, "setLogHandler"):
+                setLogHandler = self._lib.setLogHandler
+                setLogHandler.argtypes = [ctypes.c_void_p]
+                setLogHandler(operatorLogCallback)
 
         if self._cfunction is None:
             self._cfunction = getattr(self._lib, self.name)
@@ -747,29 +770,34 @@ class Operator(Callable):
         >>> op = Operator(Eq(u3.forward, u3 + 1))
         >>> summary = op.apply(time_M=10)
         """
-        # Build the arguments list to invoke the kernel function
-        with self._profiler.timer_on('arguments'):
-            args = self.arguments(**kwargs)
+        import nvtx
+        with nvtx.annotate(f"Operator.apply() for {self.name}"):
+            with nvtx.annotate("building arguments"):
+                # Build the arguments list to invoke the kernel function
+                with self._profiler.timer_on('arguments'):
+                    args = self.arguments(**kwargs)
 
-        # Invoke kernel function with args
-        arg_values = [args[p.name] for p in self.parameters]
-        try:
-            cfunction = self.cfunction
-            with self._profiler.timer_on('apply', comm=args.comm):
-                cfunction(*arg_values)
-        except ctypes.ArgumentError as e:
-            if e.args[0].startswith("argument "):
-                argnum = int(e.args[0][9:].split(':')[0]) - 1
-                newmsg = "error in argument '%s' with value '%s': %s" % (
-                    self.parameters[argnum].name,
-                    arg_values[argnum],
-                    e.args[0])
-                raise ctypes.ArgumentError(newmsg) from e
-            else:
-                raise
+            # Invoke kernel function with args
+            arg_values = [args[p.name] for p in self.parameters]
+            try:
+                cfunction = self.cfunction
+                with nvtx.annotate("apply"):
+                    with self._profiler.timer_on('apply', comm=args.comm):
+                        cfunction(*arg_values)
+            except ctypes.ArgumentError as e:
+                if e.args[0].startswith("argument "):
+                    argnum = int(e.args[0][9:].split(':')[0]) - 1
+                    newmsg = "error in argument '%s' with value '%s': %s" % (
+                        self.parameters[argnum].name,
+                        arg_values[argnum],
+                        e.args[0])
+                    raise ctypes.ArgumentError(newmsg) from e
+                else:
+                    raise
 
-        # Post-process runtime arguments
-        self._postprocess_arguments(args, **kwargs)
+            with nvtx.annotate("postprocess arguments"):
+                # Post-process runtime arguments
+                self._postprocess_arguments(args, **kwargs)
 
         # Output summary of performance achieved
         return self._emit_apply_profiling(args)
@@ -1065,3 +1093,9 @@ def parse_kwargs(**kwargs):
     )
 
     return kwargs
+
+
+@ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_char_p)
+def operatorLogCallback(level, message):
+    """ Callback from operator C/C++ code to log a message in Devito """
+    operator_log(message.decode("ascii"), level)

@@ -5,18 +5,24 @@ of symbols and data.
 
 from collections import OrderedDict
 from functools import singledispatch
+from devito.ir.equations.equation import DummyEq
+from devito.ir.iet.nodes import CLiteral, Conditional
+import cgen as c
+from devito.logger import info, warning
 from operator import itemgetter
+from devito.types.parallel import DeviceCreate, UpdateDevice
 
 import numpy as np
 
 from devito.ir import (Block, Call, Definition, DeviceCall, DeviceFunction,
                        DummyExpr, Return, EntryFunction, FindSymbols, MapExprStmts,
-                       Transformer, make_callable)
+                       Transformer, make_callable, List)
 from devito.passes.iet.engine import iet_pass, iet_visit
 from devito.passes.iet.langbase import LangBB
 from devito.passes.iet.misc import is_on_device
 from devito.symbolics import (Byref, DefFunction, FieldFromPointer, IndexedPointer,
-                              ListInitializer, SizeOf, VOID, Keyword, ccode)
+                              ListInitializer, SizeOf, VOID, Keyword, ccode,
+                               CondEq, CondNe, CondOr)
 from devito.tools import as_mapper, as_tuple, filter_sorted, flatten
 from devito.types import DeviceRM, UpdateHost, Symbol
 from devito.types.dense import AliasFunction
@@ -372,21 +378,24 @@ class DeviceAwareDataManager(DataManager):
         """
         super().__init__(sregistry)
         self.gpu_fit = options['gpu-fit']
+        self.gpu_nofit = options['gpu-nofit']
 
-    def _alloc_local_array_on_high_bw_mem(self, site, obj, storage):
+    def _alloc_local_array_on_high_bw_mem(self, site, obj, storage, devicerm=None):
         """
         Allocate a local Array in the device high bandwidth memory.
         """
         deviceid = DefFunction(self.lang['device-get'].name)
+        decl = Definition(obj, initvalue="nullptr")
         doalloc = self.lang['device-alloc']
         dofree = self.lang['device-free']
 
         nbytes = SizeOf(obj._C_typedata)*obj.size
         init = doalloc(nbytes, deviceid, retobj=obj)
+        allocs = (init, ) if isinstance(init, Call) and init.retobj == obj else (decl, init)
 
-        free = dofree(obj._C_name, deviceid)
+        free = Conditional(DeviceRM(), dofree(obj._C_name, deviceid))
 
-        storage.update(obj, site, allocs=init, frees=free)
+        storage.update(obj, site, allocs=allocs, frees=free)
 
     def _map_array_on_high_bw_mem(self, site, obj, storage):
         """
@@ -402,7 +411,7 @@ class DeviceAwareDataManager(DataManager):
 
         storage.update(obj, site, maps=mmap, unmaps=unmap)
 
-    def _map_function_on_high_bw_mem(self, site, obj, storage, devicerm, read_only=False, updatehost=None):
+    def _map_function_on_high_bw_mem(self, site, obj, storage, devicerm, read_only=False, devicecreate=None, updatehost=None, updatedevice=None):
         """
         Map a Function already defined in the host memory in to the device high
         bandwidth memory.
@@ -413,7 +422,11 @@ class DeviceAwareDataManager(DataManager):
         `_map_array_on_high_bw_mem` is that the former triggers a data transfer to
         synchronize the host and device copies, while the latter does not.
         """
-        mmap = self.lang._map_to(obj)
+        if devicecreate:
+            mmap = [self.lang._map_alloc(obj, condition=devicecreate),
+                    self.lang._map_update_device(obj, condition=updatedevice)]
+        else:
+            mmap = self.lang._map_to(obj)
 
         if read_only is False:
             unmap = [self.lang._map_update_host(obj, condition=updatehost),
@@ -482,19 +495,21 @@ class DeviceAwareDataManager(DataManager):
             writes = set(flatten(writes))
 
             # Special symbol which gives user code control over data deallocations
+            devicecreate = DeviceCreate()
             devicerm = DeviceRM()
             updatehost = UpdateHost()
+            updatedevice = UpdateDevice()
             storage = Storage()
             for i in filter_sorted(writes):
                 if i.is_Array:
                     self._map_array_on_high_bw_mem(iet, i, storage)
                 else:
-                    self._map_function_on_high_bw_mem(iet, i, storage, devicerm, updatehost = updatehost)
+                    self._map_function_on_high_bw_mem(iet, i, storage, devicerm, devicecreate = devicecreate, updatehost = updatehost, updatedevice = updatedevice)
             for i in filter_sorted(reads - writes):
                 if i.is_Array:
                     self._map_array_on_high_bw_mem(iet, i, storage)
                 else:
-                    self._map_function_on_high_bw_mem(iet, i, storage, devicerm, True)
+                    self._map_function_on_high_bw_mem(iet, i, storage, devicerm, True, devicecreate = devicecreate, updatehost = updatehost, updatedevice = updatedevice)
 
             iet = self._dump_transfers(iet, storage)
 

@@ -470,7 +470,10 @@ class IntervalGroup(PartialOrderTuple):
         return IntervalGroup(intervals, relations=relations)
 
     def translate(self, d, v0=0, v1=None):
-        intervals = [i.translate(v0, v1) if i.dim in as_tuple(d) else i for i in self]
+        if isinstance(d, dict):
+            intervals = [i.translate(as_tuple(d[i.dim])[0], as_tuple(d[i.dim])[1] if len(as_tuple(d[i.dim])) > 1 else None) if i.dim in d else i for i in self]
+        else:    
+            intervals = [i.translate(v0, v1) if i.dim in as_tuple(d) else i for i in self]
         return IntervalGroup(intervals, relations=self.relations)
 
     def index(self, key):
@@ -859,6 +862,9 @@ class IterationSpace(Space):
 
         return IterationSpace(intervals, sub_iterators, directions)
 
+    def translate(self, d, v0=0, v1=None):
+        return IterationSpace(self.intervals.translate(d, v0, v1), self.sub_iterators, self.directions)
+    
     def promote(self, cond):
         intervals = self.intervals.promote(cond)
         sub_iterators = {i.promote(cond).dim: self.sub_iterators[i.dim]

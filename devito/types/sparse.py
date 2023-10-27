@@ -5,6 +5,8 @@ import sympy
 import numpy as np
 from cached_property import cached_property
 
+from devito.data.allocators import default_allocator
+from devito.logger import debug
 from devito.finite_differences import generate_fd_shortcuts
 from devito.mpi import MPI, SparseDistributor, safe_Bcast, safe_Reduce_inplace
 from devito.operations import LinearInterpolator, PrecomputedInterpolator
@@ -12,6 +14,7 @@ from devito.symbolics import (INT, FLOOR, cast_mapper, indexify,
                               retrieve_function_carriers)
 from devito.tools import (ReducerMap, as_tuple, flatten, prod, filter_ordered,
                           memoized_meth, is_integer)
+from devito.tools.utils import c_restrict_void_p
 from devito.types.dense import DiscreteFunction, Function, SubFunction
 from devito.types.dimension import (Dimension, ConditionalDimension, DefaultDimension,
                                     DynamicDimension)
@@ -284,6 +287,8 @@ class AbstractSparseFunction(DiscreteFunction):
         elif self.grid.distributor.nprocs > 1:
             raise NotImplementedError("Don't know how to gather data from an "
                                       "object of type `%s`" % type(key))
+        
+        key._device_data_ptr = c_restrict_void_p(dataobj._obj.device_data.value)
 
 
 class AbstractSparseTimeFunction(AbstractSparseFunction):
@@ -978,7 +983,7 @@ class PrecomputedSparseFunction(AbstractSparseFunction):
 
     def _arg_apply(self, *args, **kwargs):
         distributor = self.grid.distributor
-
+    
         # If not using MPI, don't waste time
         if distributor.nprocs == 1:
             return
@@ -1177,6 +1182,7 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
 
         from devito.data.allocators import default_allocator
         self._allocator = kwargs.get("allocator", default_allocator())
+        self._device_allocator = kwargs.get("device_allocator", None)
 
         # Rows are locations, columns are source/receivers
         nloc, npoint = self.matrix.shape
@@ -1229,6 +1235,7 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             dimensions=(locdim, ddim),
             shape=(nloc, self.grid.dim),
             allocator=self._allocator,
+            device_allocator=self._device_allocator,
             space_order=0, parent=self)
 
         # There is a coefficient array per grid dimension
@@ -1255,6 +1262,7 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
                 dimensions=(locdim, coeff_dim),
                 shape=(nloc, coeff_shape),
                 allocator=self._allocator,
+                device_allocator=self._device_allocator,
                 space_order=0, parent=self)
 
             # For the _sub_functions, these must be named attributes of
@@ -1285,6 +1293,7 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             space_order=0,
             parent=self,
             allocator=self._allocator,
+            device_allocator=self._device_allocator,
         )
         self._mcol = SubFunction(
             name='mcol_%s' % self.name,
@@ -1294,6 +1303,7 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             space_order=0,
             parent=self,
             allocator=self._allocator,
+            device_allocator=self._device_allocator,
         )
         self._mval = SubFunction(
             name='mval_%s' % self.name,
@@ -1303,6 +1313,7 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             space_order=0,
             parent=self,
             allocator=self._allocator,
+            device_allocator=self._device_allocator,
         )
 
         # This loop maintains a map of nnz indices which touch each
@@ -1321,6 +1332,8 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             shape=(1,),
             space_order=0,
             parent=self,
+            allocator=self._allocator,
+            device_allocator=self._device_allocator
         )
         self._par_dim_to_nnz_m = SubFunction(
             name='par_dim_to_nnz_m_%s' % self.name,
@@ -1330,6 +1343,8 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             shape=(1,),
             space_order=0,
             parent=self,
+            allocator=self._allocator,
+            device_allocator=self._device_allocator,
         )
         self._par_dim_to_nnz_M = SubFunction(
             name='par_dim_to_nnz_M_%s' % self.name,
@@ -1339,6 +1354,8 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             shape=(1,),
             space_order=0,
             parent=self,
+            allocator=self._allocator,
+            device_allocator=self._device_allocator,
         )
 
         if self.grid.distributor.nprocs == 1:
@@ -1356,12 +1373,26 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
         # between the symbol and the data, thus causing the memory to be freed
         # This renders the object useless
         self._data = None
+        self._device_data = None
         self._gridpoints._data = None
+        self._gridpoints._device_data = None
         self._mrow._data = None
+        self._mrow._device_data = None
         self._mcol._data = None
+        self._mcol._device_data = None
         self._mval._data = None
+        self._mval._device_data = None
+
         for f in self.interpolation_coefficients.values():
             f._data = None
+            f._device_data = None
+
+        self._par_dim_to_nnz_map._data = None
+        self._par_dim_to_nnz_map._device_data = None
+        self._par_dim_to_nnz_m._data = None
+        self._par_dim_to_nnz_m._device_data = None
+        self._par_dim_to_nnz_M._data = None
+        self._par_dim_to_nnz_M._device_data = None
 
         self.scatter_result = None
         self.scattered_data = None
@@ -1736,6 +1767,16 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
             empty, *[gp_map[bi] for bi in global_rank_to_bins.get(rank, [])]))
             for rank in range(distributor.comm.Get_size())]
 
+    def _resize_subfunction(self, f, shape):
+        # This is the sledgehammer approach - invalidate every cached property
+        # on the SubFunction before updating the shape
+        for kls in f.__class__.__mro__:            
+            for key, value in kls.__dict__.items():
+                if isinstance(value, cached_property):
+                    f.__dict__.pop(key, None)
+        f._shape = shape
+
+
     def _build_par_dim_to_nnz(self, active_gp, active_mrow):
         # The case where we parallelise over a non-local index is suboptimal, but
         # supported. In this case, the actual grid point locations are ignored
@@ -1786,11 +1827,29 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
         # x_reordered[i-1] <= x < x_reordered[i]
         reordered_M = np.searchsorted(pardim_reordered, all_xs, side='right') - 1
 
+        # gross, but we need par_dim_to_nnz_{map, m, M} to be resized
+        # using our expected allocator
+        debug(f"resizing par_dim_to_nnz_map/m/M to {reordering.astype(np.int32).shape}, {reordered_m.astype(np.int32).shape}, {reordered_M.astype(np.int32).shape}")
+        self._resize_subfunction(self._par_dim_to_nnz_map, reordering.shape)
+        self._par_dim_to_nnz_map._data = None
+        self._par_dim_to_nnz_map._device_data = None
+        self.par_dim_to_nnz_map.data[:] = reordering.astype(np.int32)
+
+        self._resize_subfunction(self._par_dim_to_nnz_m, reordered_m.shape)
+        self._par_dim_to_nnz_m._data = None
+        self._par_dim_to_nnz_m._device_data = None
+        self.par_dim_to_nnz_m.data[:] = reordered_m.astype(np.int32)
+
+        self._resize_subfunction(self._par_dim_to_nnz_M, reordered_M.shape)
+        self._par_dim_to_nnz_M._data = None
+        self._par_dim_to_nnz_M._device_data = None
+        self.par_dim_to_nnz_M.data[:] = reordered_M.astype(np.int32)
+
         # return output suitable for scatter
         return {
-            self._par_dim_to_nnz_map: reordering.astype(np.int32),
-            self._par_dim_to_nnz_m: reordered_m.astype(np.int32),
-            self._par_dim_to_nnz_M: reordered_M.astype(np.int32),
+            self.par_dim_to_nnz_map: self.par_dim_to_nnz_map.data,
+            self.par_dim_to_nnz_m: self.par_dim_to_nnz_m.data,
+            self.par_dim_to_nnz_M: self.par_dim_to_nnz_M.data,
         }
 
     def manual_scatter(self, *, data_all_zero=False):
@@ -2006,6 +2065,8 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
         elif self.grid.distributor.nprocs > 1:
             raise NotImplementedError("Don't know how to gather data from an "
                                       "object of type `%s`" % type(key))
+        
+        key._device_data_ptr = c_restrict_void_p(dataobj._obj.device_data.value)
 
     def manual_gather(self):
         # data, in this case, is set to whatever dist_scatter provided?

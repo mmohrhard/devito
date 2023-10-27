@@ -11,7 +11,7 @@ from devito.symbolics.printer import ccode
 from devito.tools import Pickable, as_tuple, is_integer
 from devito.types import Symbol
 
-__all__ = ['CondEq', 'CondNe', 'IntDiv', 'CallFromPointer', 'FieldFromPointer',
+__all__ = ['CondEq', 'CondNe', 'CondOr', 'CondAnd', 'IntDiv', 'CallFromPointer', 'FieldFromPointer',
            'FieldFromComposite', 'ListInitializer', 'Byref', 'IndexedPointer', 'Cast',
            'DefFunction', 'InlineIf', 'Keyword', 'String', 'Macro', 'MacroArgument',
            'CustomType', 'Deref', 'INT', 'FLOAT', 'DOUBLE', 'VOID', 'CEIL',
@@ -56,6 +56,51 @@ class CondNe(sympy.Ne):
     def negated(self):
         return CondEq(*self.args, evaluate=False)
 
+class CondOr(sympy.Or):
+
+    """
+    A customized version of sympy.Or representing a conditional logical Or.
+    It suppresses evaluation.
+    """
+
+    def __new__(cls, *args, **kwargs):
+        return sympy.Or.__new__(cls, *args, evaluate=False)
+
+    @property
+    def canonical(self):
+        return self
+
+    @property
+    def negated(self):
+        return CondOr(*self.args, evaluate=False)
+    
+    def __str__(self):
+        return " || ".join([str(x) for x in self.args])
+    
+    __repr__ = __str__
+
+class CondAnd(sympy.And):
+
+    """
+    A customized version of sympy.And representing a conditional logical And.
+    It suppresses evaluation.
+    """
+
+    def __new__(cls, *args, **kwargs):
+        return sympy.And.__new__(cls, *args, evaluate=False)
+
+    @property
+    def canonical(self):
+        return self
+
+    @property
+    def negated(self):
+        return CondAnd(*self.args, evaluate=False)
+    
+    def __str__(self):
+        return " && ".join([str(x) for x in self.args])
+    
+    __repr__ = __str__
 
 class IntDiv(sympy.Expr):
 
