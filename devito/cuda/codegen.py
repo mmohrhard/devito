@@ -410,14 +410,19 @@ class MultilineCudaCall(c.Generable):
                 + ");"
             )
 
-        yield "\t" + instantiated_name
-        yield "\t\t.configure(%s, %s, %s, %s)" % (
+        yield "\tif (%s.x >= 1 && %s.y >= 1 && %s.z >= 1) {" % (
+            grid_name,
+            grid_name,
+            grid_name,
+        )
+        yield "\t\t" + instantiated_name
+        yield "\t\t\t.configure(%s, %s, %s, %s)" % (
             grid_name,
             tb_name,
             0,
             (self.stream if self.stream is not None else "cudaStreamDefault"),
         )
-        tip = "\t\t.launch("
+        tip = "\t\t\t.launch("
 
         processed = []
         for i in self.arguments:
@@ -426,8 +431,8 @@ class MultilineCudaCall(c.Generable):
                 if len(lines) > 1:
                     yield tip + ", ".join(processed + [lines[0]])
                     for line in lines[1:-1]:
-                        yield "\t\t\t" + line
-                    tip = "\t\t\t"
+                        yield "\t\t\t\t" + line
+                    tip = "\t\t\t\t"
                     processed = [lines[-1]]
                 else:
                     assert len(lines) == 1
@@ -439,6 +444,7 @@ class MultilineCudaCall(c.Generable):
         tip += ";"
 
         yield tip
+        yield "\t}"
         yield "}"
 
 

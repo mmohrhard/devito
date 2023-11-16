@@ -51,12 +51,15 @@ def kernel_tuning(iet, **kwargs):
                 else 0
             )
         ]
-        setup_lambda += 'return program.kernel("%s").instantiate(%s); }' % (
+        setup_lambda += '\treturn program.kernel("%s").instantiate(%s);\n\t}' % (
             call.name,
             ",".join(
                 block_parameters
                 + subblock_parameters
-                + [ccode(x.rhs) for x in call.template_arguments]
+                + [
+                    ("std::max<int>(1, %s)" % ccode(x.rhs))
+                    for x in call.template_arguments
+                ]
             ),
         )
         preferred_sub_block = call.preferred_sub_block or []
