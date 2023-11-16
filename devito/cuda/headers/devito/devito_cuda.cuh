@@ -15,11 +15,14 @@
 
 #ifdef KERNEL_DEBUGGING
 #define NVRTC_OPTS                                                             \
-  { "--use_fast_math", "-G", "--modify-stack-limit=false" }
+  {                                                                            \
+    "--ftz=true", "--fmad=true", "--prec-sqrt=true", "--prec-div=true", "-G",  \
+        "--modify-stack-limit=false"                                           \
+  }
 #else
 #ifndef NVRTC_OPTS
 #define NVRTC_OPTS                                                             \
-  { "--use_fast_math", "--modify-stack-limit=false" }
+  { "--ftz=true", "--fmad=true", "--prec-sqrt=true", "--prec-div=true", "--modify-stack-limit=false" }
 #endif
 #endif
 
