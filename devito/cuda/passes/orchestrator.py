@@ -130,10 +130,10 @@ class CudaOrchestrator(Orchestrator):
     def _make_prefetchupdate(self, iet, sync_ops):
         preactions = []
         preactions.extend(
-            [self.lang._map_wait_event(s, stream=self._host_stream) for s in sync_ops]
+            [self.lang._map_fire_event(s, stream=self._kernel_stream) for s in sync_ops]
         )
         preactions.extend(
-            [self.lang._map_fire_event(s, stream=self._kernel_stream) for s in sync_ops]
+            [self.lang._map_wait_event(s, stream=self._host_stream) for s in sync_ops]
         )
         preactions.extend([self.lang._map_recreate_event(s) for s in sync_ops])
 

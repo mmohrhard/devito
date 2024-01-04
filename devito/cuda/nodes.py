@@ -505,6 +505,14 @@ class CudaTransfer(CudaStorage, Transfer, Node):
                 pass
         return tuple(retval)
 
+    def __repr__(self):
+        return "CudaTransfer(%s, %s, %s, %s)" % (
+            self._function.name,
+            self._direction,
+            self._condition,
+            self._stream,
+        )
+
 
 class CudaAlloc(CudaStorage, Node):
     def __init__(self, function, imask=None, condition=None):
@@ -525,6 +533,9 @@ class CudaAlloc(CudaStorage, Node):
                 pass
         return tuple(retval)
 
+    def __repr__(self):
+        return "<CudaAlloc(%s)>" % (self.function.name)
+
 
 class CudaDealloc(CudaStorage, Node):
     def __init__(self, function, imask=None, condition=None):
@@ -544,6 +555,9 @@ class CudaDealloc(CudaStorage, Node):
             except AttributeError:
                 pass
         return tuple(retval)
+
+    def __repr__(self):
+        return "<CudaDealloc(%s)>" % (self.function.name)
 
 
 class CudaCheckError(CLiteral):

@@ -261,9 +261,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
                 c.If(
                     "%s < %s || %s > %s"
                     % (dim.name, str(limits[0]), dim.name, str(limits[1])),
-                    c.Statement("continue")
-                    if v < len(valid_dims) - 1
-                    else c.Statement("return"),
+                    c.Statement("continue") if has_sub_block else c.Statement("return"),
                 )
             )
 
