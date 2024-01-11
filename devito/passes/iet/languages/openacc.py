@@ -218,15 +218,8 @@ class AccBB(PragmaLangBB):
 
 
 class DeviceAccizer(PragmaDeviceAwareTransformer):
-
-    async_queue_id = 100
-
-    default_qid: int
-
     def __init__(self, sregistry, options, platform, compiler):
         super().__init__(sregistry, options, platform, compiler)
-        self.default_qid = DeviceAccizer.async_queue_id
-        DeviceAccizer.async_queue_id = DeviceAccizer.async_queue_id + 1
 
     lang = AccBB
 
@@ -251,37 +244,14 @@ class DeviceAccizer(PragmaDeviceAwareTransformer):
             else:
                 tile = tile[:ncollapsable + 1]
 
-            body = self.DeviceIteration(gpu_fit=self.gpu_fit, tile=tile, qid=self.default_qid, **root.args)
+            body = self.DeviceIteration(gpu_fit=self.gpu_fit, tile=tile, **root.args)
             partree = ParallelTree([], body, nthreads=nthreads)
 
             return root, partree
         else:
-            if offloadable:
-                root, partree = super()._make_partree(candidates, nthreads, qid=self.default_qid)
-                return root, partree
-            else:
-                root, partree = super()._make_partree(candidates, nthreads)
-                # TODO: see if we need to synchronise here?
-#                partree.prefix = flatten([partree.prefix, self.lang._map_wait(self.default.qid)])
-                return root, partree
+            root, partree = super()._make_partree(candidates, nthreads)
 
-    def _make_parallel(self, iet):
-        iet, attrs = super()._make_parallel(iet)
-
-        # do an additional pass to insert OpenACC waits at SyncSpots
-        sync_spots = FindNodes(SyncSpot).visit(iet)
-        if not sync_spots:
-            return iet, attrs
-
-        efuncs = []
-        subs = {}
-        for n in sync_spots:
-            if [x for x in n.sync_ops if isinstance(x, WaitLock)]:
-                subs[n] = (n, self.lang._map_wait(self.default_qid))
-
-        iet = Transformer(subs).visit(iet)
-
-        return iet, attrs
+            return root, partree
 
 
 class DevicePointerFetch(List):
