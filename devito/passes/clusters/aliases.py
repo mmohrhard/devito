@@ -335,7 +335,18 @@ class CireSops(CireTransformer):
             # TODO: to process third- and higher-order derivatives, we could
             # extend this by calling `_aliases_from_clusters` repeatedly until
             # `made` is empty. To be investigated
+
+            syncs = c.syncs
+
             made = self._aliases_from_clusters([c], exclude, self._lookup_key(c))
+
+            # Hoist syncs to the top of any generated Clusters
+            # nb: this isn't optimal, but it works. Better would be
+            # to hoist each sync only to the generated temporary that
+            # touches it
+            if len(made) > 1 and len(syncs) > 0:
+                made[0] = made[0].rebuild(syncs=syncs)
+                made[-1] = made[-1].rebuild(syncs=None)
 
             processed.extend(flatten(made) or [c])
 
