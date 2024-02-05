@@ -1,8 +1,18 @@
 import ctypes
+import sympy
 from devito.types import Scalar, Global
 from devito.symbolics.extended_sympy import ReservedWord
+from devito.types.array import ArrayMapped
+from devito.types.utils import DimensionTuple
 
-__all__ = ["CudaEvent", "CudaStream", "NullPointer", "JitifyCache", "JitifyProgram"]
+__all__ = [
+    "CudaEvent",
+    "CudaStream",
+    "NullPointer",
+    "JitifyCache",
+    "JitifyProgram",
+    "EnlargedBuffer",
+]
 
 
 class cudaEvent_t(ctypes.Structure):
@@ -61,3 +71,24 @@ class JitifyProgram(Global):
 
     def __new__(cls, name, *args, **kwargs):
         return super().__new__(cls, name)
+
+
+class EnlargedBuffer(ArrayMapped):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.adjusted_dimensions = [
+            d.parent if d.is_Sub else d for d in kwargs["dimensions"]
+        ]
+
+    @property
+    def symbolic_shape(self):
+        """
+        The symbolic shape of the object. This includes the domain, halo, and
+        padding regions. While halo and padding are known quantities (integers),
+        the domain size is given as a symbol.
+        """
+        halo = [sympy.Add(*i, evaluate=False) for i in self._size_halo]
+        padding = [sympy.Add(*i, evaluate=False) for i in self._size_padding]
+        domain = [i.symbolic_size for i in self.adjusted_dimensions]
+        ret = tuple(sympy.Add(i, j, k) for i, j, k in zip(domain, halo, padding))
+        return DimensionTuple(*ret, getters=self.dimensions)

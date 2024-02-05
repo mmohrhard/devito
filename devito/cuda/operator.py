@@ -9,6 +9,7 @@ from devito.core.gpu import (
 )
 from devito.core.operator import CustomOperator
 from devito.cuda.target import DeviceCudaTarget
+from devito.cuda.types import EnlargedBuffer
 
 from devito.passes.equations import collect_derivatives
 from devito.passes.clusters import (
@@ -116,8 +117,13 @@ class DeviceCustomCudaOperator(
             else:
                 return None
 
+        def buffer_gen_callback(f, **kwargs):
+            return EnlargedBuffer(**kwargs)
+
         return {
-            "buffering": lambda i: buffering(i, callback, sregistry, options),
+            "buffering": lambda i: buffering(
+                i, callback, sregistry, options, opt_buffer=buffer_gen_callback
+            ),
             "blocking": lambda i: blocking(i, sregistry, options),
             "cuda-memcpy": lambda i: cuda_memcpy(i, sregistry=sregistry),
             "tasking": Tasker(runs_on_host, sregistry).process,
