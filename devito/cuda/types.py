@@ -74,8 +74,8 @@ class JitifyProgram(Global):
 
 
 class EnlargedBuffer(ArrayMapped):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init_finalize__(self, **kwargs):
+        super().__init_finalize__(**kwargs)
         self.adjusted_dimensions = [
             d.parent if d.is_Sub else d for d in kwargs["dimensions"]
         ]
