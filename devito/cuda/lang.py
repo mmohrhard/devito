@@ -26,7 +26,7 @@ from devito.types import Symbol
 from devito.cuda.nodes import (
     KernelStream,
     HostStream,
-    NcclStream,
+    # NcclStream,
     MemCopyStream,
     CudaChecked,
     CudaTransfer,
@@ -116,7 +116,7 @@ class CudaBB(PragmaLangBB):
                 Call("ENSURE_STREAM", (HostStream(),)),
                 Call("ENSURE_STREAM", (MemCopyStream(),)),
                 Call("ENSURE_STREAM", (KernelStream(),)),
-                Call("ENSURE_STREAM", (NcclStream(),)),
+                # Call("ENSURE_STREAM", (NcclStream(),)),
                 Definition(JitifyCache("kernel_cache"), prefix="static"),
                 Definition(
                     JitifyProgram("program"),
