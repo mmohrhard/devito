@@ -33,7 +33,7 @@ from devito.cuda.nodes import (
     CudaAlloc,
     CudaDealloc,
 )
-from devito.cuda.types import JitifyCache, JitifyProgram
+from devito.cuda.types import JitifyProgram
 from devito.types.parallel import DeviceID
 
 
@@ -117,7 +117,7 @@ class CudaBB(PragmaLangBB):
                 Call("ENSURE_STREAM", (MemCopyStream(),)),
                 Call("ENSURE_STREAM", (KernelStream(),)),
                 # Call("ENSURE_STREAM", (NcclStream(),)),
-                Definition(JitifyCache("kernel_cache"), prefix="static"),
+                Call("ENSURE_CACHE", ()),
                 Definition(
                     JitifyProgram("program"),
                     initvalue=Call("kernel_cache.program", ("_cudaKernels", 0)),

@@ -148,6 +148,10 @@ inline void critical(const std::string &format, Args... args) {
     NAME = NAME##_devs[device];                                                \
   };
 
+#define ENSURE_CACHE()                                                         \
+  static jitify::JitCache caches[MAX_CUDA_DEVICES];                            \
+  auto &kernel_cache = caches[_cudaGetCurrentDevice()];
+
 inline void _cudaChecked(cudaError_t err, const char *file, int line,
                          const char *extra = nullptr) {
   if (err != cudaSuccess) {
@@ -365,22 +369,21 @@ static void dim3_set(dim3 &d, int rank, int value) {
 }
 
 static float _occupancyForKernel(CUfunction &k, const dim3 &block) {
-  static int max_sm_registers = 0;
-  static int max_block_registers;
-  static int max_sm_threads;
-  static int max_sm_blocks;
-  if (max_sm_registers == 0) {
-    int device = 0;
-    cudaGetDevice(&device);
-    cudaDeviceGetAttribute(&max_sm_threads,
-                           cudaDevAttrMaxThreadsPerMultiProcessor, device);
-    cudaDeviceGetAttribute(&max_sm_blocks,
-                           cudaDevAttrMaxBlocksPerMultiprocessor, device);
-    cudaDeviceGetAttribute(&max_sm_registers,
-                           cudaDevAttrMaxRegistersPerMultiprocessor, device);
-    cudaDeviceGetAttribute(&max_block_registers,
-                           cudaDevAttrMaxRegistersPerMultiprocessor, device);
-  }
+  int max_sm_registers = 0;
+  int max_block_registers;
+  int max_sm_threads;
+  int max_sm_blocks;
+
+  int device = 0;
+  cudaGetDevice(&device);
+  cudaDeviceGetAttribute(&max_sm_threads,
+                         cudaDevAttrMaxThreadsPerMultiProcessor, device);
+  cudaDeviceGetAttribute(&max_sm_blocks, cudaDevAttrMaxBlocksPerMultiprocessor,
+                         device);
+  cudaDeviceGetAttribute(&max_sm_registers,
+                         cudaDevAttrMaxRegistersPerMultiprocessor, device);
+  cudaDeviceGetAttribute(&max_block_registers,
+                         cudaDevAttrMaxRegistersPerMultiprocessor, device);
 
   int regs;
   cuFuncGetAttribute(&regs, CU_FUNC_ATTRIBUTE_NUM_REGS, k);
