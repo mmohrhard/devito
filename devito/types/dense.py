@@ -56,6 +56,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     is_DiscreteFunction = True
 
     _DataType = Data
+    _DeviceDataType = Data
+
     """
     The type of the underlying data object.
     """
@@ -141,11 +143,15 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
 
                     if self._device_allocator is not None:
                         with nvtx.annotate("device"):
-                            debug("Allocating device memory for %s%s [%s]" % (self.name, self.shape_allocated, humanbytes(self.nbytes)))
-                            self._device_data, self._device_data_alloc_args = self._device_allocator.alloc(self.shape_allocated, self.dtype)
-                            self._device_data_ptr = self._device_data.ctypes.data_as(c_restrict_void_p)
-                            debug("Memory is 0x%lx bytes at 0x%lx on the host, and 0x%lx on the device" % (self.nbytes, self._data.ctypes.data_as(c_restrict_void_p).value, self._device_data_ptr.value or 0))
-                        
+                            debug("Allocating device memory for %s%s [%s]" % (
+                                self.name,
+                                self.shape_allocated,
+                                humanbytes(self.nbytes)))
+                            self._device_data = self._DeviceDataType(
+                                self.shape_allocated,
+                                self.dtype,
+                                allocator=self._device_allocator)
+
                     # Initialize data
                     if self._first_touch:
                         assign(self, 0)
@@ -1019,21 +1025,21 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         for i, s in zip(self.dimensions, key.shape):
             i._arg_check(args, s, intervals[i])
 
-    
     def _arg_finalize(self, args, alias=None):
         key = alias or self
-        
+
         if self._device_allocator is not None and (
             self._device_data is None 
             or self._device_data.shape != args[key.name].shape
         ):
             # Make sure that the device allocation matches the size expected
             self._device_data = None
-            (self._device_data, self._device_data_alloc_args) = self._device_allocator.alloc(args[key.name].shape, self.dtype)
-            self._device_data_ptr = self._device_data.ctypes.data_as(c_restrict_void_p)
+            self._device_data = self._DeviceDataType(self.shape_alocated,
+                                                     self.dtype,
+                                                     allocator=self._device_allocator)
 
         return {key.name: self._C_make_dataobj(args[key.name], self._device_data)}
-    
+
     def _arg_apply(self, dataobj, alias=None):
         key = alias or self
 
