@@ -4,7 +4,7 @@ from devito.cuda.utils import q_has_modulo
 
 from devito.ir.iet.nodes import Expression
 from devito.ir.iet.visitors import FindNodes, Visitor
-from devito.symbolics.manipulation import pow_to_mul, uxreplace
+from devito.symbolics.manipulation import uxreplace
 from devito.tools.utils import flatten
 
 __all__ = ["realign_iet"]
@@ -127,7 +127,7 @@ class IterationLimitTranslator(Visitor):
         return o._rebuild(
             expr=o.expr.func(
                 lhs,
-                pow_to_mul(rhs),
+                rhs,
                 ispace=o.expr.ispace.translate(self._dim_mapper),
             )
         )
