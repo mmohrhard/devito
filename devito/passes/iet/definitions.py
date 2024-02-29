@@ -393,7 +393,7 @@ class DeviceAwareDataManager(DataManager):
         init = doalloc(nbytes, deviceid, retobj=obj)
         allocs = (init, ) if isinstance(init, Call) and init.retobj == obj else (decl, init)
 
-        free = Conditional(DeviceRM(), dofree(obj._C_name, deviceid))
+        free = dofree(obj._C_name, deviceid)
 
         storage.update(obj, site, allocs=allocs, frees=free)
 
