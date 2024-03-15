@@ -306,13 +306,12 @@ class Compiler(GCCToolchain):
         # Should the compilation command be emitted?
         debug_build = configuration['log-level'] == 'DEBUG'
 
-        # Spinlock in case of MPI
-        sleep_delay = 0 if configuration['mpi'] else 1
+        sleep_delay = 1
 
         # if clang-format is on the path, then format the generated code
         try:
             from subprocess import run, PIPE
-            p = run(["clang-format"], stdout=PIPE, input=code, encoding='ascii')            
+            p = run(["clang-format"], stdout=PIPE, input=code, encoding='ascii')
             if p.returncode == 0:
                 code = p.stdout
         except OSError:
