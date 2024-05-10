@@ -1,11 +1,13 @@
 #pragma once
 
+#include "nvtx3/nvToolsExt.h"
 #include <cmath>
 #include <cuda.h>
 #include <devito/jitify.hpp>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <stdio.h>
@@ -13,18 +15,27 @@
 #include <tuple>
 #include <utility>
 
+#define STRINGIFY(x) _stringify(x)
+#define _stringify(x) #x
+
+#ifndef NVRTC_CUDA_ARCH
+// Default to compute capability 7.0 aka V100
+#define NVRTC_CUDA_ARCH compute_70
+#endif
+
 #ifdef KERNEL_DEBUGGING
+#define DEBUG_OPTS "-G",
+#else
+#define DEBUG_OPTS
+#endif
+
 #define NVRTC_OPTS                                                             \
   {                                                                            \
-    "--ftz=true", "--fmad=true", "--prec-sqrt=true", "--prec-div=true", "-G",  \
-        "--modify-stack-limit=false"                                           \
+    "--ftz=true", "--fmad=true", "--prec-sqrt=true", "--prec-div=true",        \
+        DEBUG_OPTS "--modify-stack-limit=false", "--split-compile=4",          \
+        "--gpu-architecture=" STRINGIFY(NVIDIA_CUDA_ARCH),                     \
+        "--extra-device-vectorization", "--minimal", "--restrict"                            \
   }
-#else
-#ifndef NVRTC_OPTS
-#define NVRTC_OPTS                                                             \
-  { "--ftz=true", "--fmad=true", "--prec-sqrt=true", "--prec-div=true", "--modify-stack-limit=false" }
-#endif
-#endif
 
 enum LogLevel {
   CRITICAL = 50,
@@ -90,8 +101,6 @@ inline void critical(const std::string &format, Args... args) {
 
 #define CudaChecked(f) _cudaChecked((f), __FILE__, __LINE__)
 #define CudaCheckedEx(f, msg) _cudaChecked((f), __FILE__, __LINE__, msg)
-#define STRINGIFY(x) _stringify(x)
-#define _stringify(x) #x
 
 #define MAX_CUDA_DEVICES 16
 #define PER_DEVICE_TEMP_GET(T, NAME, SIZE)                                     \
@@ -104,7 +113,8 @@ inline void critical(const std::string &format, Args... args) {
     if (NAME##_device[device] == nullptr) {                                    \
       debug("allocating %llu bytes for " STRINGIFY(NAME) " on device %d",      \
             SIZE, device);                                                     \
-      CudaChecked(cudaMalloc((void **)&NAME##_device[device], (SIZE)));        \
+      CudaChecked(cudaMallocAsync((void **)&NAME##_device[device], (SIZE),     \
+                                  kernel_stream));                             \
       cudaMemset(NAME##_device[device], 1, (SIZE));                            \
     }                                                                          \
     NAME = NAME##_device[device];                                              \
@@ -115,7 +125,7 @@ inline void critical(const std::string &format, Args... args) {
     int device = 0;                                                            \
     cudaGetDevice(&device);                                                    \
     assert(device >= 0 && device < MAX_CUDA_DEVICES);                          \
-    CudaChecked(cudaFree(NAME##_device[device]));                              \
+    CudaChecked(cudaFreeAsync(NAME##_device[device], kernel_stream));          \
     NAME##_device[device] = nullptr;                                           \
   }
 
@@ -150,7 +160,7 @@ inline void critical(const std::string &format, Args... args) {
 
 #define ENSURE_CACHE()                                                         \
   static jitify::JitCache caches[MAX_CUDA_DEVICES];                            \
-  auto &kernel_cache = caches[_cudaGetCurrentDevice()];
+  auto &kernel_cache = caches[0];
 
 inline void _cudaChecked(cudaError_t err, const char *file, int line,
                          const char *extra = nullptr) {
@@ -158,7 +168,6 @@ inline void _cudaChecked(cudaError_t err, const char *file, int line,
     err = cudaGetLastError();
     critical("!!! CUDA Error in operator: %s:%d %s%s", file, line,
              (extra != nullptr) ? extra : "", cudaGetErrorString(err));
-    // exit(1);
   }
 }
 
@@ -170,7 +179,6 @@ inline void _cudaCheckKernelLaunch(dim3 grid, dim3 block, const char *file,
   if (err != cudaSuccess) {
     critical("!!! CUDA Error after kernel launch: %s:%d %s", file, line,
              cudaGetErrorString(err));
-    // exit(1);
   }
 }
 
@@ -298,7 +306,7 @@ void transferDataObject(cudaMemcpyKind kind, T *obj, size_t size = 0,
   }
 
   if (size > 0 && cond) {
-    if (stream != nullptr && stream != cudaStreamDefault)
+    if (stream != nullptr)
       CudaChecked(cudaMemcpyAsync(dst, src, size, kind, stream));
     else {
       debug("transferring %s %s (%lx -> %lx)", name,
@@ -310,29 +318,34 @@ void transferDataObject(cudaMemcpyKind kind, T *obj, size_t size = 0,
 }
 
 #define prepareDataObject(NAME, ...)                                           \
-  _prepareDataObject(NAME, STRINGIFY(NAME), __VA_ARGS__);
+  _prepareDataObject(NAME, STRINGIFY(NAME), "prepareDataObject(" #NAME ")",    \
+                     __VA_ARGS__);
 template <typename T>
-void _prepareDataObject(T *obj, const char *name, size_t size,
-                        bool copyIn = true, cudaStream_t stream = nullptr) {
+void _prepareDataObject(T *obj, const char *name, const char *nvtxRange,
+                        size_t size, bool copyIn = true,
+                        cudaStream_t stream = nullptr) {
+  nvtxRangePush(nvtxRange);
   int device = 0;
   cudaGetDevice(&device);
   if (!_cudaPtrIsManaged(obj->data)) {
     if (obj->device_data == nullptr) {
       debug("allocating %llu bytes for %s on device %d", size, name, device);
-      CudaChecked(cudaMalloc((void **)&obj->device_data, size));
+      CudaChecked(cudaMallocAsync((void **)&obj->device_data, size, stream));
       obj->operator_allocated = 1;
     }
     transferDataObject(cudaMemcpyHostToDevice, obj, size, copyIn, stream, name);
   }
+  nvtxRangePop();
 }
 #define destroyDataObject(NAME, ...)                                           \
   _destroyDataObject(NAME, STRINGIFY(NAME), __VA_ARGS__);
 
 template <typename T>
-void _destroyDataObject(T *obj, const char *name, bool del = true) {
+void _destroyDataObject(T *obj, const char *name, bool del = true,
+                        cudaStream_t stream = nullptr) {
   if (del && obj->operator_allocated) {
     debug("freeing %s", name);
-    CudaChecked(cudaFree(obj->device_data));
+    CudaChecked(cudaFreeAsync(obj->device_data, stream));
     obj->device_data = nullptr;
   }
 }
@@ -444,8 +457,8 @@ _check_kernel(const dim3 &block, const dim3 &sub_block,
 
     occupancy = _occupancyForKernel(k, block);
     debug("rebuilt kernel is valid, has max occupancy at %d threads "
-                 "(%.2f device occupancy), uses %d registers",
-                 max_block, 100. * occupancy, regs);
+          "(%.2f device occupancy), uses %d registers",
+          max_block, 100. * occupancy, regs);
     if (max_block >= block.x * block.y * block.z) {
       is_valid = true;
 
@@ -481,18 +494,34 @@ inline bool compare_options(float occupancy1, const dim3 &block1,
   return true;
 }
 
+std::mutex cache_mutex;
+
 static tuned_kernel
 performTuning(tuningDict &tuning, const char *name, dim3 preferred,
               dim3 preferred_sub, dim3 expected_grid, int max_block_dimension,
               std::function<jitify::KernelInstantiation(dim3, dim3)> builder) {
+  nvtxRangePush(name);
+  int device = 0;
+  int max_sm_resident_blocks = 0;
+  int sm_count = 0;
+
+  cudaGetDevice(&device);
+  cudaDeviceGetAttribute(&max_sm_resident_blocks,
+                         cudaDevAttrMaxBlocksPerMultiprocessor, device);
+  cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device);
 
   int max_block = 0;
 
-  // Calculate the maximum possible occupancy for the preferred block size
   auto tmp_kernel = builder(preferred, preferred_sub);
+
+  // Calculate the maximum possible occupancy for the preferred block size
   CUfunction cf = (CUfunction)tmp_kernel;
-  if (tuning.find(cf) != tuning.end()) {
-    return tuning.at(cf);
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    if (tuning.find(cf) != tuning.end()) {
+      nvtxRangePop();
+      return tuning.at(cf);
+    }
   }
 
   debug("=== performing tuning for %s with default block "
@@ -513,6 +542,7 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
              "with blocksize (%d, %d, %d), sub-block size (%d, %d, %d)!",
              name, preferred.x, preferred.y, preferred.z, preferred_sub.x,
              preferred_sub.y, preferred_sub.z);
+    nvtxRangePop();
     assert(false);
   }
 
@@ -548,17 +578,15 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
           "(<32 or >75%% expected waste)",
           expected_grid.x, expected_grid.y, expected_grid.z);
 
-  // dim3 sub(1, 1, 1);
   int nearest_square = 0;
-  // int diff = threads - (preferred.x * preferred.y * preferred.z);
-  // int best_diff = diff;
 
   // Assume the initial input is 'best' until we know otherwise
-  float best_eff = _occupancyForKernel(
-      cf, preferred); //_est_efficiency(max_block, preferred);
+  float best_eff = _occupancyForKernel(cf, preferred);
   debug("base occupancy is %.2f", best_eff);
-  if (best_eff > 0.99) {
+  if (best_eff > 0.66) {
+    std::lock_guard<std::mutex> lock(cache_mutex);
     tuning[cf] = result;
+    nvtxRangePop();
     return tuning[cf];
   }
 
@@ -585,6 +613,19 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
     break;
 
   case 3:
+    // Short-circuit if we're already using less blocks than the device can
+    // simultaneously run
+    if (best_eff > 0.1 &&
+        sm_count * max_sm_resident_blocks >
+            (expected_grid.x * expected_grid.y * expected_grid.z) /
+                (block.x * block.y * block.z)) {
+      debug("Required block count ~%d already fits on device (%d SM, %d "
+            "block/SM). Giving up now.",
+            (expected_grid.x * expected_grid.y * expected_grid.z) /
+                (block.x * block.y * block.z),
+            sm_count, max_sm_resident_blocks);
+      break;
+    }
     // Force small dimensions to have small block sizes, even if it means
     // warp divergence
     for (int d = 0; d < 3; d++) {
@@ -611,7 +652,8 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
               "(occupancy %.2f%%)",
               next_block.x, next_block.y, next_block.z, 100. * next_eff);
 
-        if (compare_options(best_eff, std::get<0>(result), next_eff, next_block)) {
+        if (compare_options(best_eff, std::get<0>(result), next_eff,
+                            next_block)) {
           result = tuned_kernel(next_block, preferred_sub);
           best_eff = next_eff;
         }
@@ -657,7 +699,7 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
 
     break;
   default:
-    assert(false);
+    break;
   }
 
   debug("selected block (%d, %d, %d), sub_block (%d, %d, %d) with est. "
@@ -665,6 +707,10 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
         std::get<0>(result).x, std::get<0>(result).y, std::get<0>(result).z,
         std::get<1>(result).x, std::get<1>(result).y, std::get<1>(result).z,
         best_eff);
-  tuning[cf] = result;
-  return tuning[cf];
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    tuning[cf] = result;
+  }
+  nvtxRangePop();
+  return result;
 }

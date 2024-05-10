@@ -85,6 +85,10 @@
 #define JITIFY_THREAD_SAFE 1
 #endif
 
+#ifndef JITIFY_THREAD_SAFE_EXTRA_LOCKS
+#define JITIFY_THREAD_SAFE_EXTRA_LOCKS 0
+#endif
+
 #if JITIFY_ENABLE_EMBEDDED_FILES
 #include <dlfcn.h>
 #endif
@@ -181,6 +185,10 @@
   JITIFY_FORCE_UNDEFINED_SYMBOL(_jitify_binary_##name##_start);           \
   JITIFY_FORCE_UNDEFINED_SYMBOL(_jitify_binary_##name##_end)
 #endif  // JITIFY_ENABLE_EMBEDDED_FILES
+
+#if JITIFY_THREAD_SAFE && JITIFY_THREAD_SAFE_EXTRA_LOCKS
+static std::mutex linkerMutex;
+#endif
 
 /*! Jitify library namespace
  */
@@ -1114,9 +1122,13 @@ class CUDAKernel {
   CUlinkState _link_state;
   CUmodule _module;
   CUfunction _kernel;
+  void *_cubin;
   std::string _func_name;
   std::string _ptx;
   std::map<std::string, std::string> _global_map;
+  std::map<unsigned long long, CUmodule> _modules;
+  std::map<unsigned long long, CUfunction> _kernels;
+  std::mutex _context_mtx;
   std::vector<CUjit_option> _opts;
   std::vector<void*> _optvals;
 #ifdef JITIFY_PRINT_LINKER_LOG
@@ -1134,14 +1146,27 @@ class CUDAKernel {
   }
   inline void create_module(std::vector<std::string> link_files,
                             std::vector<std::string> link_paths) {
+#if JITIFY_THREAD_SAFE && JITIFY_THREAD_SAFE_EXTRA_LOCKS
+    std::lock_guard<std::mutex> lock(linkerMutex);
+#endif
+
     CUresult result;
+    CUcontext ctx;
+    CUmodule mod;
+    CUfunction knl;
+    cuda_safe_call(cuCtxGetCurrent(&ctx));
+    unsigned long long ctxid = (unsigned long long)ctx;
+
 #ifndef JITIFY_PRINT_LINKER_LOG
     // WAR since linker log does not seem to be constructed using a single call
     // to cuModuleLoadDataEx.
     if (link_files.empty()) {
-      result =
-          cuModuleLoadDataEx(&_module, _ptx.c_str(), (unsigned)_opts.size(),
-                             _opts.data(), _optvals.data());
+      result = cuModuleLoadDataEx(&mod, _ptx.c_str(), (unsigned)_opts.size(),
+                                  _opts.data(), _optvals.data());
+      {
+        std::lock_guard<std::mutex> ctx_guard(_context_mtx);
+        _modules[ctxid] = mod;
+      }  
     } else
 #endif
     {
@@ -1183,10 +1208,13 @@ class CUDAKernel {
         cuda_safe_call(result);
       }
       size_t cubin_size;
-      void* cubin;
-      result = cuLinkComplete(_link_state, &cubin, &cubin_size);
+      result = cuLinkComplete(_link_state, &_cubin, &cubin_size);
       if (result == CUDA_SUCCESS) {
-        result = cuModuleLoadData(&_module, cubin);
+        result = cuModuleLoadData(&mod, _cubin);
+        {
+          std::lock_guard<std::mutex> context_guard(_context_mtx);
+          _modules[ctxid] = mod;
+        }
       }
     }
 #ifdef JITIFY_PRINT_LINKER_LOG
@@ -1204,15 +1232,26 @@ class CUDAKernel {
     // Allow _func_name to be empty to support cases where we want to generate
     // PTX containing extern symbol definitions but no kernels.
     if (!_func_name.empty()) {
-      cuda_safe_call(
-          cuModuleGetFunction(&_kernel, _module, _func_name.c_str()));
+      cuda_safe_call(cuModuleGetFunction(&knl, mod, _func_name.c_str()));
+      {
+        std::lock_guard<std::mutex> context_guard(_context_mtx);
+        _kernels[ctxid] = knl;
+      }
+      std::cerr << "generated kernel " << knl << std::endl;
     }
   }
   inline void destroy_module() {
     if (_link_state) {
+#if JITIFY_THREAD_SAFE && JITIFY_THREAD_SAFE_EXTRA_LOCKS
+      std::lock_guard<std::mutex> lock(linkerMutex);
+#endif
       cuda_safe_call(cuLinkDestroy(_link_state));
     }
     _link_state = 0;
+    for (auto &c : _modules) {
+      cuModuleUnload(c.second);
+    }
+    _modules.clear();
     if (_module) {
       cuModuleUnload(_module);
     }
@@ -1259,7 +1298,7 @@ class CUDAKernel {
   }
 
  public:
-  inline CUDAKernel() : _link_state(0), _module(0), _kernel(0) {}
+  inline CUDAKernel() : _link_state(0), _module(0), _kernel(0), _cubin(0) {}
   inline CUDAKernel(const CUDAKernel& other) = delete;
   inline CUDAKernel& operator=(const CUDAKernel& other) = delete;
   inline CUDAKernel(CUDAKernel&& other) = delete;
@@ -1300,30 +1339,94 @@ class CUDAKernel {
     return *this;
   }
   inline ~CUDAKernel() { this->destroy_module(); }
-  inline operator CUfunction() const { return _kernel; }
+
+  inline CUfunction get_function() const {
+    CUcontext ctx;
+    CUmodule mod;
+    cuda_safe_call(cuCtxGetCurrent(&ctx));
+    unsigned long long ctxid = (unsigned long long)ctx;
+    {
+      std::lock_guard<std::mutex> context_guard(
+          const_cast<CUDAKernel *>(this)->_context_mtx);
+      auto k = _kernels.find(ctxid);
+      if (k != _kernels.end()) {
+        return k->second;
+      }
+    }
+
+    CUfunction knl;
+    {
+      std::lock_guard<std::mutex> context_guard(
+          const_cast<CUDAKernel *>(this)->_context_mtx);
+      auto m = _modules.find(ctxid);
+      if (m != _modules.end()) {
+
+        cuda_safe_call(cuModuleGetFunction(&knl, m->second, _func_name.c_str()));
+        return knl;
+      }
+    }
+
+#ifndef JITIFY_PRINT_LINKER_LOG
+    // WAR since linker log does not seem to be constructed using a single call
+    // to cuModuleLoadDataEx.
+    if (_cubin == nullptr) {
+      cuModuleLoadDataEx(&mod, _ptx.c_str(), (unsigned)_opts.size(),
+                                  const_cast<CUjit_option *>(_opts.data()), const_cast<void **>(_optvals.data()));
+      {
+        std::lock_guard<std::mutex> context_guard(
+            const_cast<CUDAKernel *>(this)->_context_mtx);
+        const_cast<CUDAKernel *>(this)->_modules[ctxid] = mod;
+      }
+    } else
+#endif
+    {
+      // probably need to build a module for this context
+      cuModuleLoadData(&mod, _cubin);
+      {
+        std::lock_guard<std::mutex> context_guard(
+            const_cast<CUDAKernel *>(this)->_context_mtx);
+        const_cast<CUDAKernel *>(this)->_modules[ctxid] = mod;
+      }
+    }
+
+    cuda_safe_call(cuModuleGetFunction(&knl, mod, _func_name.c_str()));
+
+    {
+      std::lock_guard<std::mutex> context_guard(
+          const_cast<CUDAKernel *>(this)->_context_mtx);
+      const_cast<CUDAKernel *>(this)->_kernels[ctxid] = knl;
+    }
+
+    return knl;
+  }
+
+  inline operator CUfunction() const {
+    return get_function();
+  }
 
   inline CUresult launch(dim3 grid, dim3 block, unsigned int smem,
                          CUstream stream, std::vector<void*> arg_ptrs) const {
-    return cuLaunchKernel(_kernel, grid.x, grid.y, grid.z, block.x, block.y,
-                          block.z, smem, stream, arg_ptrs.data(), NULL);
+    return cuLaunchKernel(get_function(), grid.x, grid.y, grid.z, block.x,
+                          block.y, block.z, smem, stream, arg_ptrs.data(),
+                          NULL);
   }
 
   inline void safe_launch(dim3 grid, dim3 block, unsigned int smem,
                           CUstream stream, std::vector<void*> arg_ptrs) const {
-    return cuda_safe_call(cuLaunchKernel(_kernel, grid.x, grid.y, grid.z,
+    return cuda_safe_call(cuLaunchKernel(get_function(), grid.x, grid.y, grid.z,
                                          block.x, block.y, block.z, smem,
                                          stream, arg_ptrs.data(), NULL));
   }
 
   inline int get_func_attribute(CUfunction_attribute attribute) const {
     int value;
-    cuda_safe_call(cuFuncGetAttribute(&value, attribute, _kernel));
+    cuda_safe_call(cuFuncGetAttribute(&value, attribute, get_function()));
     return value;
   }
 
   inline void set_func_attribute(CUfunction_attribute attribute,
                                  int value) const {
-    cuda_safe_call(cuFuncSetAttribute(_kernel, attribute, value));
+    cuda_safe_call(cuFuncSetAttribute(get_function(), attribute, value));
   }
 
   inline CUdeviceptr get_global_ptr(const char* name,
