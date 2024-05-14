@@ -1237,7 +1237,9 @@ class CUDAKernel {
         std::lock_guard<std::mutex> context_guard(_context_mtx);
         _kernels[ctxid] = knl;
       }
+#ifdef JITIFY_PRINT_LINKER_LOG
       std::cerr << "generated kernel " << knl << std::endl;
+#endif
     }
   }
   inline void destroy_module() {
