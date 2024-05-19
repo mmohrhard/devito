@@ -16,7 +16,6 @@ from devito.tools import dtype_to_ctype, humanbytes
 
 __all__ = ['ALLOC_FLAT', 'ALLOC_NUMA_LOCAL', 'ALLOC_NUMA_ANY',
            'ALLOC_KNL_MCDRAM', 'ALLOC_KNL_DRAM', 'ALLOC_GUARD',
-           'ALLOC_CUDA_DEVICE', 'ALLOC_CUDA_SHARED', 'ALLOC_CUDA_HOST',
            'default_allocator', 'CudaAllocator', 'CudaAllocationType']
 
 
@@ -515,9 +514,6 @@ ALLOC_KNL_DRAM = NumaAllocator(0)
 ALLOC_KNL_MCDRAM = NumaAllocator(1)
 ALLOC_NUMA_ANY = NumaAllocator('any')
 ALLOC_NUMA_LOCAL = NumaAllocator('local')
-ALLOC_CUDA_DEVICE = CudaAllocator(CudaAllocationType.DEVICE)
-ALLOC_CUDA_SHARED = CudaAllocator(CudaAllocationType.SHARED)
-ALLOC_CUDA_HOST = CudaAllocator(CudaAllocationType.HOST)
 
 custom_allocators = {}
 """User-defined allocators."""
@@ -558,9 +554,6 @@ def default_allocator(name=None):
         * ALLOC_KNL_MCDRAM: On a Knights Landing platform, allocate memory in MCDRAM.
                             Falls back to DRAM if there isn't enough space.
         * ALLOC_KNL_DRAM: On a Knights Landing platform, allocate memory in DRAM.
-        * ALLOC_CUDA_HOST: When CUDA is being used, allocate page-locked host memory for
-                        faster GPU copies.
-        * ALLOC_CUDA_SHARED: When CUDA is being used, allocate CUDA managed memory
 
 
     Custom allocators may be added with `register_allocator`.
@@ -575,9 +568,6 @@ def default_allocator(name=None):
         return ALLOC_GUARD
 
     is_knl = configuration['platform'].name.startswith('knl')
-
-    if not is_knl and ALLOC_CUDA_HOST.available():
-        return ALLOC_CUDA_HOST
 
     if NumaAllocator.available():
         if is_knl and infer_knl_mode() == "flat":
