@@ -1,11 +1,9 @@
 from functools import partial
 from hashlib import sha1
 from os import environ, path
-from packaging.version import Version
-from subprocess import DEVNULL, PIPE, CalledProcessError, check_output, check_call, run
+from subprocess import PIPE, CalledProcessError, check_output, check_call, run
 import platform
 import warnings
-import sys
 import time
 
 import numpy.ctypeslib as npct
@@ -15,72 +13,12 @@ from codepy.toolchain import GCCToolchain
 from devito.arch import (AMDGPUX, NVIDIAX, M1, SKX, POWER8, POWER9, get_nvidia_cc,
                          check_cuda_runtime, get_m1_llvm_path)
 from devito.exceptions import CompilationError
-from devito.logger import debug, warning, error
+from devito.logger import debug, warning
 from devito.parameters import configuration
 from devito.tools import (as_list, change_directory, filter_ordered,
                           memoized_meth, make_tempdir)
 
 __all__ = ['sniff_mpi_distro', 'compiler_registry']
-
-
-def sniff_compiler_version(cc):
-    """
-    Detect the compiler version.
-
-    Adapted from: ::
-
-        https://github.com/OP2/PyOP2/
-    """
-    try:
-        res = run([cc, "--version"], stdout=PIPE, stderr=DEVNULL)
-        ver = res.stdout.decode("utf-8")
-        if not ver:
-            return Version("0")
-    except UnicodeDecodeError:
-        return Version("0")
-    except FileNotFoundError:
-        error("The `%s` compiler isn't available on this system" % cc)
-        sys.exit(1)
-
-    if ver.startswith("gcc"):
-        compiler = "gcc"
-    elif ver.startswith("clang"):
-        compiler = "clang"
-    elif ver.startswith("Apple LLVM"):
-        compiler = "clang"
-    elif ver.startswith("Homebrew clang"):
-        compiler = "clang"
-    elif ver.startswith("icc"):
-        compiler = "icc"
-    elif ver.startswith("pgcc"):
-        compiler = "pgcc"
-    else:
-        compiler = "unknown"
-
-    ver = Version("0")
-    if compiler in ["gcc", "icc"]:
-        try:
-            # gcc-7 series only spits out patch level on dumpfullversion.
-            res = run([cc, "-dumpfullversion"], stdout=PIPE, stderr=DEVNULL)
-            ver = res.stdout.decode("utf-8")
-            ver = '.'.join(ver.strip().split('.')[:3])
-            if not ver:
-                res = run([cc, "-dumpversion"], stdout=PIPE, stderr=DEVNULL)
-                ver = res.stdout.decode("utf-8")
-                ver = '.'.join(ver.strip().split('.')[:3])
-                if not ver:
-                    return Version("0")
-            ver = Version(ver)
-        except UnicodeDecodeError:
-            pass
-
-    # Pure integer versions (e.g., ggc5, rather than gcc5.0) need special handling
-    try:
-        ver = Version(float(ver))
-    except TypeError:
-        pass
-
-    return ver
 
 
 def sniff_mpi_distro(mpiexec):
@@ -174,15 +112,6 @@ class Compiler(GCCToolchain):
             self.so_ext = '.dll'
         else:
             raise NotImplementedError("Unsupported platform %s" % platform)
-
-        if self.suffix is not None:
-            try:
-                self.version = Version(str(float(self.suffix)))
-            except (TypeError, ValueError):
-                self.version = Version(self.suffix)
-        else:
-            # Knowing the version may still be useful to pick supported flags
-            self.version = sniff_compiler_version(self.CC)
 
     def __new_with__(self, **kwargs):
         """
@@ -310,7 +239,6 @@ class Compiler(GCCToolchain):
 
         # if clang-format is on the path, then format the generated code
         try:
-            from subprocess import run, PIPE
             p = run(["clang-format"], stdout=PIPE, input=code, encoding='ascii')
             if p.returncode == 0:
                 code = p.stdout
@@ -372,16 +300,10 @@ class GNUCompiler(Compiler):
         else:
             self.cflags.append('-ffast-math')
 
-        language = kwargs.pop('language', configuration['language'])
-        try:
-            if self.version >= Version("4.9.0"):
-                # Append the openmp flag regardless of the `language` value,
-                # since GCC4.9 and later versions implement OpenMP 4.0, hence
-                # they support `#pragma omp simd`
-                self.ldflags += ['-fopenmp']
-        except (TypeError, ValueError):
-            if language == 'openmp':
-                self.ldflags += ['-fopenmp']
+        # Append the openmp flag regardless of the `language` value,
+        # since GCC4.9 and later versions implement OpenMP 4.0, hence
+        # they support `#pragma omp simd`
+        self.ldflags += ['-fopenmp']
 
     def __lookup_cmds__(self):
         self.CC = 'gcc'
@@ -538,6 +460,7 @@ class NvidiaCompiler(PGICompiler):
         self.MPICC = 'mpic++'
         self.MPICXX = 'mpicxx'
 
+
 class CudaCompiler(Compiler):
 
     def __init__(self, *args, **kwargs):
@@ -570,7 +493,6 @@ class IntelCompiler(Compiler):
 
         self.cflags.append("-xhost")
 
-        language = kwargs.pop('language', configuration['language'])
         platform = kwargs.pop('platform', configuration['platform'])
 
         if configuration['safe-math']:
@@ -582,16 +504,10 @@ class IntelCompiler(Compiler):
             # Systematically use 512-bit vectors on skylake
             self.cflags.append("-qopt-zmm-usage=high")
 
-        try:
-            if self.version >= Version("15.0.0"):
-                # Append the OpenMP flag regardless of configuration['language'],
-                # since icc15 and later versions implement OpenMP 4.0, hence
-                # they support `#pragma omp simd`
-                self.ldflags.append('-qopenmp')
-        except (TypeError, ValueError):
-            if language == 'openmp':
-                # Note: fopenmp, not qopenmp, is what is needed by icc versions < 15.0
-                self.ldflags.append('-fopenmp')
+        # Append the OpenMP flag regardless of configuration['language'],
+        # since icc15 and later versions implement OpenMP 4.0, hence
+        # they support `#pragma omp simd`
+        self.ldflags.append('-qopenmp')
 
         # Make sure the MPI compiler uses `icc` underneath -- whatever the MPI distro is
         if kwargs.get('mpi'):

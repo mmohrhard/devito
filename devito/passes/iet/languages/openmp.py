@@ -208,11 +208,6 @@ class Ompizer(PragmaShmTransformer):
 
     @classmethod
     def _support_array_reduction(cls, compiler):
-        # Not all backend compilers support array reduction!
-        # Here are the known unsupported ones:
-        if isinstance(compiler, GNUCompiler) and \
-           compiler.version < Version("6.0"):
-            return False
         return True
 
 
