@@ -29,6 +29,10 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
 
     count = 0
 
+    def __init__(self, sregistry, options, platform, compiler):
+        super().__init__(sregistry, options, platform, compiler)
+        self._realign_iet_opt = options.get("realign_iet", True)
+
     def _extract_kernels(self, candidates, nthreads=None):
         assert candidates
 
@@ -134,7 +138,9 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             return super()._make_nested_partree(partree)
 
     def _make_cuda_kernel(self, name, body):
-        body = realign_iet(body)
+        if self._realign_iet_opt is True:
+            body = realign_iet(body)
+
         # Find the iterators we consider eligible for being the GPU grid dimensions
         iterations = list(
             [i for i in FindNodes(Iteration).visit(body) if i.is_ParallelRelaxed]
