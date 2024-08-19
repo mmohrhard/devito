@@ -42,8 +42,10 @@ class NThreadsBase(Scalar):
 
     @cached_property
     def default_value(self):
-        return int(os.environ.get('OMP_NUM_THREADS',
-                                  configuration['platform'].cores_physical))
+        val = os.environ.get('OMP_NUM_THREADS',
+                             str(configuration['platform'].cores_physical))
+        split = val.split(",")
+        return int(split[0])
 
 
 class NThreads(NThreadsBase):
@@ -62,6 +64,10 @@ class NThreadsNested(NThreadsBase):
 
     @property
     def default_value(self):
+        val = os.environ.get('OMP_NUM_THREADS', "").split(",")
+        if len(val) > 1:
+            return int(val[1])
+
         return configuration['platform'].threads_per_core
 
 

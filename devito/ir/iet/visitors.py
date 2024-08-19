@@ -190,8 +190,6 @@ class CGen(Visitor):
                 ret.append(c.Value('void', '*_%s' % i._C_name))
         return ret
 
-
-
     def _args_call(self, args):
         """
         Generate cgen function call arguments from an iterable of symbols and expressions.
@@ -406,7 +404,6 @@ class CGen(Visitor):
 
         return code
 
-
     def visit_AugmentedExpression(self, o):
         code = c.Statement("%s %s= %s" % (ccode(o.expr.lhs, dtype=o.dtype), o.op,
                            ccode(o.expr.rhs, dtype=o.dtype)))
@@ -500,7 +497,6 @@ class CGen(Visitor):
         signature = c.FunctionDeclaration(c.Value(prefix, o.name), decls)
         return c.FunctionBody(signature, c.Block(body))
 
-
     def visit_CallableBody(self, o):
         body = []
         prev = None
@@ -588,6 +584,79 @@ class CGen(Visitor):
 
         return c.Module(headers + includes + typedecls +
                         global_code + esigns + [blankline, kernel] + efuncs)
+
+
+# Code generation more closely aligned to the OpenMP standard
+#
+# Specifically, the standard disallows for loops of the form:
+# #pragma omp <anything at all>
+# for (int x1 = x_m, x2 = 0; x <= x_M; x1++, x2++)
+#
+# The Intel Classic compiler just accepts these non-canonical loops; anything
+# newer needs a workaround of the form:
+# #pragma omp <whatever>
+# for (int _x = 0; x <= x_M - x_m; x++) {
+#   int x1 = x_m + _x;
+#   int x2 = _x;
+# }
+class CGenOpenMP(CGen):
+    def visit_Iteration(self, o):
+        if not (o.uindices and o.pragmas):
+            return super().visit_Iteration(o)
+
+        body = flatten(self._visit(i) for i in self._blankline_logic(o.children))
+
+        _min = o.limits[0]
+        _max = o.limits[1]
+
+        loop_index = "%s_idx" % (o.index)
+
+        loop_init = "int %s = 0" % (loop_index)
+        loop_cond = "%s <= ((%s) - (%s))" % (loop_index, ccode(_max), ccode(_min))
+        loop_inc = "%s += 1" % (loop_index)
+
+        uinit = []
+
+        for i in o.uindices:
+            if i.is_Modulo:
+                uinit.append(
+                    c.Line("const int %s = %s;" % (i.name, ccode(i.symbolic_incr)))
+                )
+            else:
+                uinit.append(
+                    c.Line(
+                        "const int %s = (%s) + (%s * (%s));"
+                        % (
+                            i.name,
+                            ccode(i.symbolic_min),
+                            loop_index,
+                            ccode(i.symbolic_incr),
+                        )
+                    )
+                )
+
+        if o.direction == Backward:
+            op = "-"
+            start = _max
+        else:
+            op = "+"
+            start = _min
+
+        body_setup = [
+            c.Line(
+                "const int %s = (%s) %s (%s * (%s));"
+                % (o.index, ccode(start), op, loop_index, o.limits[2])
+            )
+        ]
+
+        handle = c.For(
+            loop_init, loop_cond, loop_inc, c.Block(flatten(body_setup + uinit + body))
+        )
+
+        # Attach pragmas
+        handle = c.Module(o.pragmas + (handle,))
+
+        return handle
 
 
 class CInterface(CGen):

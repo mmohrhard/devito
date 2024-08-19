@@ -145,7 +145,7 @@ class PragmaShmTransformer(PragmaSimdTransformer):
              * 'par-dynamic-work': use dynamic scheduling if the operation count per
                iteration exceeds this threshold. Otherwise, use static scheduling.
              * 'par-nested': nested parallelism if the number of hyperthreads per core
-               is greater than this threshold.
+               is greater than this threshold, or 'force' to always enable it.
         platform : Platform
             The underlying platform.
         compiler : Compiler
@@ -159,6 +159,8 @@ class PragmaShmTransformer(PragmaSimdTransformer):
         self.chunk_nonaffine = options['par-chunk-nonaffine']
         self.dynamic_work = options['par-dynamic-work']
         self.nested = options['par-nested']
+        if self.nested == 'force':
+            self.nested = -1
 
     @property
     def ncores(self):

@@ -7,8 +7,10 @@ import ctypes
 import numpy as np
 
 from devito.arch import compiler_registry, platform_registry
+from devito.arch.compiler import IntelCompiler
 from devito.data import default_allocator
 from devito.exceptions import InvalidOperator
+from devito.ir.iet.visitors import CGenOpenMP
 from devito.logger import operator_log, debug, info, perf, warning, is_log_enabled_for
 from devito.ir.equations import LoweredEq, lower_exprs
 from devito.ir.clusters import ClusterGroup, clusterize
@@ -150,6 +152,18 @@ class Operator(Callable):
 
         # Normalize input arguments for the selected Operator
         kwargs = cls._normalize_kwargs(**kwargs)
+
+        # Default codegen for OpenMP produces code that isn't strictly
+        # compliant with the standard, and non-icc compilers fail
+        if kwargs["language"] == "openmp" and not isinstance(
+            kwargs["compiler"], IntelCompiler
+        ):
+            debug(
+                "detected non-ICC compiler %s in openmp mode, "
+                "enabling canonical loop form workaround"
+                % kwargs["compiler"]
+            )
+            cls._CodeGen = CGenOpenMP
 
         # Lower to a JIT-compilable object
         with timed_region('op-compile') as r:
