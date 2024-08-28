@@ -141,9 +141,7 @@ class DeviceCudaDataManager(DataManager):
                     "PER_DEVICE_ARRAY_TEMP_DECLARE",
                     (obj._C_symbol, ReservedWord(obj._C_typedata)),
                 ),
-                Call(
-                    "PER_DEVICE_ARRAY_TEMP_GET", (obj._C_symbol, nbytes_arg), retobj=obj
-                ),
+                Call("PER_DEVICE_ARRAY_TEMP_GET", (obj._C_symbol, nbytes_arg)),
             ]
         )
 

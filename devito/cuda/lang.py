@@ -1,7 +1,6 @@
 import cgen as c
 
 from devito.cuda.nodes import CudaTransferDirection
-from devito.ir.iet.nodes import Conditional
 
 from devito.arch import CUDA, NVIDIAX
 from devito.ir import (
@@ -20,7 +19,6 @@ from devito.symbolics import Byref, VOID, INT
 from devito.passes.iet.languages.openmp import OmpRegion, OmpIteration
 from devito.passes.iet.languages.utils import make_clause_reduction
 from devito.passes.iet.misc import is_on_device
-from devito.symbolics.extended_sympy import CondNe
 from devito.tools import filter_ordered
 from devito.types import Symbol
 from devito.cuda.nodes import (
@@ -112,7 +110,7 @@ class CudaBB(PragmaLangBB):
         "aligned": lambda i: "__attribute__((aligned(%d)))" % i,
         "init": lambda args: List(
             body=[
-                Conditional(CondNe(DeviceID(), -1), Call("cudaSetDevice", (DeviceID(),))),
+                Call("SET_DEVICE", (DeviceID(),)),
                 Call("ENSURE_STREAM", (HostStream(),)),
                 Call("ENSURE_STREAM", (MemCopyStream(),)),
                 Call("ENSURE_STREAM", (KernelStream(),)),

@@ -15,6 +15,10 @@
 #include <tuple>
 #include <utility>
 
+#ifndef OPERATOR_STANDALONE
+#include <Python.h>
+#endif
+
 #define STRINGIFY(x) _stringify(x)
 #define _stringify(x) #x
 
@@ -34,8 +38,12 @@
     "--ftz=true", "--fmad=true", "--prec-sqrt=true", "--prec-div=true",        \
         DEBUG_OPTS "--modify-stack-limit=false", "--split-compile=4",          \
         "--gpu-architecture=" STRINGIFY(NVIDIA_CUDA_ARCH),                     \
-        "--extra-device-vectorization", "--minimal", "--restrict"                            \
+        "--extra-device-vectorization", "--minimal", "--restrict"              \
   }
+
+/**
+ * LOGGING
+ */
 
 enum LogLevel {
   CRITICAL = 50,
@@ -72,10 +80,10 @@ std::string string_format(const std::string &format, Args... args) {
 
 template <typename... Args>
 inline void log(int logLevel, const std::string &format, Args... args) {
+  std::string message = string_format(format, std::forward<Args>(args)...);
+
   if (_logHandler == nullptr)
     return;
-
-  std::string message = string_format(format, std::forward<Args>(args)...);
   _logHandler(logLevel, message.c_str());
 }
 
@@ -99,23 +107,38 @@ inline void critical(const std::string &format, Args... args) {
   log(LogLevel::CRITICAL, format, std::forward<Args>(args)...);
 }
 
-#define CudaChecked(f) _cudaChecked((f), __FILE__, __LINE__)
-#define CudaCheckedEx(f, msg) _cudaChecked((f), __FILE__, __LINE__, msg)
+/**
+ * CUDA error helpers
+ */
+#define CudaChecked(f)                                                         \
+  {                                                                            \
+    if (!_cudaChecked((f), __FILE__, __LINE__))                                \
+      return -1;                                                               \
+  }
+#define CudaCheckedEx(f, msg)                                                  \
+  {                                                                            \
+    if (!_cudaChecked((f), __FILE__, __LINE__, msg))                           \
+      return -1;                                                               \
+  }
 
+/**
+ * Thread-local temporary variable helpers
+ */
 #define MAX_CUDA_DEVICES 16
 #define PER_DEVICE_TEMP_GET(T, NAME, SIZE)                                     \
   T *NAME = nullptr;                                                           \
   static T *NAME##_device[MAX_CUDA_DEVICES] = {0};                             \
   {                                                                            \
     int device = 0;                                                            \
-    cudaGetDevice(&device);                                                    \
+    CudaChecked(cudaGetDevice(&device));                                       \
     assert(device >= 0 && device < MAX_CUDA_DEVICES);                          \
     if (NAME##_device[device] == nullptr) {                                    \
       debug("allocating %llu bytes for " STRINGIFY(NAME) " on device %d",      \
             SIZE, device);                                                     \
       CudaChecked(cudaMallocAsync((void **)&NAME##_device[device], (SIZE),     \
                                   kernel_stream));                             \
-      cudaMemset(NAME##_device[device], 1, (SIZE));                            \
+      CudaChecked(                                                             \
+          cudaMemsetAsync(NAME##_device[device], 1, (SIZE), kernel_stream));   \
     }                                                                          \
     NAME = NAME##_device[device];                                              \
   }
@@ -123,18 +146,23 @@ inline void critical(const std::string &format, Args... args) {
 #define PER_DEVICE_TEMP_DESTROY(NAME)                                          \
   {                                                                            \
     int device = 0;                                                            \
-    cudaGetDevice(&device);                                                    \
+    CudaChecked(cudaGetDevice(&device));                                       \
     assert(device >= 0 && device < MAX_CUDA_DEVICES);                          \
     CudaChecked(cudaFreeAsync(NAME##_device[device], kernel_stream));          \
     NAME##_device[device] = nullptr;                                           \
   }
 
 #define PER_DEVICE_ARRAY_TEMP_DECLARE(NAME, ARRAYTYPE)                         \
-  static ARRAYTYPE *NAME##_device[MAX_CUDA_DEVICES] = {0};
+  static ARRAYTYPE *NAME##_device[MAX_CUDA_DEVICES] = {0};                     \
+  ARRAYTYPE *NAME = {0};
 
 #define PER_DEVICE_ARRAY_TEMP_GET(NAME, NBYTES)                                \
-  _allocTempArray(&NAME##_device[_cudaGetCurrentDevice()], NBYTES,             \
-                  STRINGIFY(NAME))
+  {                                                                            \
+    if (_allocTempArray(&NAME##_device[_cudaGetCurrentDevice()], NBYTES,       \
+                        STRINGIFY(NAME)) != 0)                                 \
+      return -1;                                                               \
+    NAME = NAME##_device[_cudaGetCurrentDevice()];                             \
+  }
 
 #define PER_DEVICE_ARRAY_TEMP_DESTROY(NAME)                                    \
   {                                                                            \
@@ -145,11 +173,16 @@ inline void critical(const std::string &format, Args... args) {
 
 #define pow(x, y) powf(x, y)
 
+/**
+ * Miscellaneous helpers
+ */
 #define ENSURE_STREAM(NAME)                                                    \
   static cudaStream_t NAME##_devs[MAX_CUDA_DEVICES] = {0};                     \
   [[maybe_unused]] cudaStream_t NAME = nullptr;                                \
   {                                                                            \
     int device = _cudaGetCurrentDevice();                                      \
+    if (device < 0)                                                            \
+      return -1;                                                               \
     if (NAME##_devs[device] == nullptr)                                        \
       CudaCheckedEx(cudaStreamCreateWithFlags(&NAME##_devs[device],            \
                                               cudaStreamNonBlocking),          \
@@ -162,13 +195,51 @@ inline void critical(const std::string &format, Args... args) {
   static jitify::JitCache caches[MAX_CUDA_DEVICES];                            \
   auto &kernel_cache = caches[0];
 
-inline void _cudaChecked(cudaError_t err, const char *file, int line,
-                         const char *extra = nullptr) {
-  if (err != cudaSuccess) {
-    err = cudaGetLastError();
-    critical("!!! CUDA Error in operator: %s:%d %s%s", file, line,
-             (extra != nullptr) ? extra : "", cudaGetErrorString(err));
+#define SET_DEVICE(dev)                                                        \
+  {                                                                            \
+    int cur = _cudaGetCurrentDevice();                                         \
+    if (cur != dev && dev != -1)                                               \
+      warn("!!! CUDA issue: expected device %d, current device %d", dev, cur); \
+    cudaSetDevice(dev);                                                        \
   }
+
+/**
+ * @brief Raise a Python error.
+ *
+ * @param format The format string
+ * @param args Format string arguments
+ */
+template <typename... Args>
+void acquire_gil_and_raise_error(const std::string &format, Args... args) {
+  std::string message = string_format(format, std::forward<Args>(args)...);
+  critical(message);
+#ifndef OPERATOR_STANDALONE
+  PyGILState_STATE gstate;
+  gstate = PyGILState_Ensure();
+  PyErr_Format(PyExc_RuntimeError, message.c_str());
+  PyGILState_Release(gstate);
+#endif
+}
+
+/**
+ * Check for pending CUDA errors, and raise a Python error
+ * if one is found
+ */
+bool _cudaChecked(cudaError_t err, const char *file, int line,
+                  const char *extra = nullptr) {
+  if (err != cudaSuccess) {
+    acquire_gil_and_raise_error("!!! CUDA Error in operator: %s:%d %s%s", file,
+                                line, (extra != nullptr) ? extra : "",
+                                cudaGetErrorString(err));
+
+    // Attempt to clear the current CUDA error
+    cudaDeviceSynchronize();
+    cudaGetLastError();
+
+    return false;
+  }
+
+  return true;
 }
 
 #define CudaCheckLaunch(grid, block)                                           \
@@ -182,19 +253,23 @@ inline void _cudaCheckKernelLaunch(dim3 grid, dim3 block, const char *file,
   }
 }
 
-template <typename T> void _freeTempArrayData(T *array) {
+template <typename T> int _freeTempArrayData(T *array) {
   CudaChecked(cudaFree(array->device_data));
   CudaChecked(cudaFreeHost(array->data));
+  return 0;
 }
-template <typename T> void _freeTempArray(T *array) {
-  _freeTempArrayData(array);
+
+template <typename T> int _freeTempArray(T *array) {
+  if (_freeTempArrayData(array) != 0)
+    return -1;
   CudaChecked(cudaFreeHost(array));
+  return 0;
 }
 
 template <typename T>
-inline T *_allocTempArray(T **array_ptr, size_t nbytes, const char *name) {
+inline int _allocTempArray(T **array_ptr, size_t nbytes, const char *name) {
   int device = 0;
-  cudaGetDevice(&device);
+  CudaChecked(cudaGetDevice(&device));
 
   if (*array_ptr == nullptr) {
     CudaChecked(cudaMallocHost((void **)array_ptr, sizeof(T)));
@@ -205,14 +280,15 @@ inline T *_allocTempArray(T **array_ptr, size_t nbytes, const char *name) {
   if (array->nbytes != nbytes) {
     debug("%sallocating %llu bytes for %s for temporary data on device %d",
           array->nbytes > 0 ? "re" : "", nbytes, name, device);
-    _freeTempArrayData(array);
+    if (_freeTempArrayData(array) != 0)
+      return -1;
     CudaChecked(cudaMallocHost((void **)(&array->data), nbytes));
     CudaChecked(cudaMalloc((void **)(&array->device_data), nbytes));
-    cudaMemset(array->device_data, 0, nbytes);
+    CudaChecked(cudaMemset(array->device_data, 0, nbytes));
     array->nbytes = nbytes;
   }
 
-  return array;
+  return 0;
 }
 
 inline uint64_t next_pow2(uint64_t x) {
@@ -283,8 +359,6 @@ template <typename T> inline bool _cudaPtrIsDeviceAccessible(T *ptr) {
   return ret == cudaSuccess && attr.devicePointer != NULL;
 }
 
-template <typename T> inline void _cudaEnsureAllocated() {}
-
 #define _setCudaConstant(TYPE, NAME, VAL)                                      \
   {                                                                            \
     TYPE tmp = VAL;                                                            \
@@ -292,9 +366,9 @@ template <typename T> inline void _cudaEnsureAllocated() {}
   }
 
 template <typename T>
-void transferDataObject(cudaMemcpyKind kind, T *obj, size_t size = 0,
-                        bool cond = true, cudaStream_t stream = nullptr,
-                        const char *name = nullptr) {
+int transferDataObject(cudaMemcpyKind kind, T *obj, size_t size = 0,
+                       bool cond = true, cudaStream_t stream = nullptr,
+                       const char *name = nullptr) {
   T *src = nullptr;
   T *dst = nullptr;
   if (kind == cudaMemcpyHostToDevice) {
@@ -306,48 +380,76 @@ void transferDataObject(cudaMemcpyKind kind, T *obj, size_t size = 0,
   }
 
   if (size > 0 && cond) {
-    if (stream != nullptr)
+    debug("transferring %s %s (%lx -> %lx)", name,
+          kind == cudaMemcpyHostToDevice ? "H->D" : "D->H", src, dst);
+    if (stream != nullptr) {
       CudaChecked(cudaMemcpyAsync(dst, src, size, kind, stream));
-    else {
-      debug("transferring %s %s (%lx -> %lx)", name,
-            kind == cudaMemcpyHostToDevice ? "H->D" : "D->H", src, dst);
-
+    } else {
       CudaChecked(cudaMemcpy(dst, src, size, kind));
     }
   }
+
+  return 0;
 }
 
 #define prepareDataObject(NAME, ...)                                           \
   _prepareDataObject(NAME, STRINGIFY(NAME), "prepareDataObject(" #NAME ")",    \
-                     __VA_ARGS__);
+                     __VA_ARGS__)
 template <typename T>
-void _prepareDataObject(T *obj, const char *name, const char *nvtxRange,
-                        size_t size, bool copyIn = true,
-                        cudaStream_t stream = nullptr) {
+int _prepareDataObject(T *obj, const char *name, const char *nvtxRange,
+                       size_t size, bool copyIn = true,
+                       cudaStream_t stream = nullptr) {
   nvtxRangePush(nvtxRange);
   int device = 0;
-  cudaGetDevice(&device);
+  int ret = 0;
+  CudaChecked(cudaGetDevice(&device));
   if (!_cudaPtrIsManaged(obj->data)) {
     if (obj->device_data == nullptr) {
       debug("allocating %llu bytes for %s on device %d", size, name, device);
       CudaChecked(cudaMallocAsync((void **)&obj->device_data, size, stream));
       obj->operator_allocated = 1;
+    } else {
+      cudaPointerAttributes attrs = cudaPointerAttributes{};
+      CudaChecked(cudaPointerGetAttributes(&attrs, obj->device_data));
+
+      if (attrs.devicePointer == NULL) {
+        acquire_gil_and_raise_error(
+            "!!! CUDA error: object %s with host ptr %llx,"
+            "is inaccessible by device %d (created on device %d)",
+            name, obj->data, device, attrs.device);
+        nvtxRangePop();
+        return -1;
+      } else if (attrs.device != device) {
+        critical(
+            "!!! CUDA issue: object %s with host ptr %llx, original device "
+            "pointer %llx, local device pointer %llx was created on device %d "
+            "and is being accessed by device %d - this should not happen",
+            name, obj->data, obj->device_data, attrs.devicePointer,
+            attrs.device, device);
+      }
     }
-    transferDataObject(cudaMemcpyHostToDevice, obj, size, copyIn, stream, name);
+    ret = transferDataObject(cudaMemcpyHostToDevice, obj, size, copyIn, stream,
+                             name);
   }
   nvtxRangePop();
+  return ret;
 }
 #define destroyDataObject(NAME, ...)                                           \
-  _destroyDataObject(NAME, STRINGIFY(NAME), __VA_ARGS__);
+  {                                                                            \
+    if (_destroyDataObject(NAME, STRINGIFY(NAME), __VA_ARGS__) < 0)            \
+      return -1;                                                               \
+  }
 
 template <typename T>
-void _destroyDataObject(T *obj, const char *name, bool del = true,
-                        cudaStream_t stream = nullptr) {
+int _destroyDataObject(T *obj, const char *name, bool del = true,
+                       cudaStream_t stream = nullptr) {
   if (del && obj->operator_allocated) {
     debug("freeing %s", name);
     CudaChecked(cudaFreeAsync(obj->device_data, stream));
     obj->device_data = nullptr;
   }
+
+  return 0;
 }
 
 using tuned_kernel = std::pair<dim3, dim3>;
@@ -660,7 +762,6 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
       }
 
       tried.emplace(std::make_tuple(next_block.x, next_block.y, next_block.z));
-      tried.emplace(std::make_tuple(next_block.y, next_block.x, next_block.z));
 
       // find largest grid for which (kernel max occupancy threads) %
       // (x*y*z) ~= 0
@@ -691,8 +792,6 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
           }
           tried.emplace(
               std::make_tuple(next_block.x, next_block.y, next_block.z));
-          tried.emplace(
-              std::make_tuple(next_block.y, next_block.x, next_block.z));
         }
       }
     }

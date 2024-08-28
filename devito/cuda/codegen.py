@@ -221,13 +221,17 @@ class CudaCGen(CGen):
 
             dest_args.append(f'"{o.name}"')
 
-            return c.Statement("%s(%s)" % (method, ", ".join(dest_args)))
+            return c.Statement(
+                "if (%s(%s) < 0) return -1" % (method, ", ".join(dest_args))
+            )
 
     def visit_CudaAlloc(self, o):
         prep_args = [o.name, o.size]
         if o.condition is not None:
             prep_args.append(ccode(o.condition))
-        return c.Statement("prepareDataObject(%s)" % ", ".join(prep_args))
+        return c.Statement(
+            "if (prepareDataObject(%s) < 0) return -1" % ", ".join(prep_args)
+        )
 
     def visit_CudaDealloc(self, o):
         dest_args = [o.name]
@@ -415,7 +419,7 @@ class MultilineCudaCall(c.Generable):
             grid_name,
             grid_name,
         )
-        yield "\t\t" + instantiated_name
+        yield "\t\tCudaChecked((cudaError_t)(" + instantiated_name
         yield "\t\t\t.configure(%s, %s, %s, %s)" % (
             grid_name,
             tb_name,
@@ -440,7 +444,7 @@ class MultilineCudaCall(c.Generable):
             else:
                 processed.append(str(i))
         tip = tip + ", ".join(processed)
-        tip += ")"
+        tip += ")))"
         tip += ";"
 
         yield tip
