@@ -3,6 +3,7 @@ import sympy
 from devito.types import Scalar, Global
 from devito.symbolics.extended_sympy import ReservedWord
 from devito.types.array import ArrayMapped
+from devito.types.parallel import DeviceSymbol
 from devito.types.utils import DimensionTuple
 
 __all__ = [
@@ -92,3 +93,18 @@ class EnlargedBuffer(ArrayMapped):
         domain = [i.symbolic_size for i in self.adjusted_dimensions]
         ret = tuple(sympy.Add(i, j, k) for i, j, k in zip(domain, halo, padding))
         return DimensionTuple(*ret, getters=self.dimensions)
+
+
+class JitOnly(DeviceSymbol):
+    name = "jitonly"
+
+    @property
+    def default_value(self):
+        return 0
+
+    def _arg_values(self, **kwargs):
+        try:
+            # Enforce 1 or 0
+            return {self.name: int(bool(kwargs[self.name]))}
+        except KeyError:
+            return self._arg_defaults()

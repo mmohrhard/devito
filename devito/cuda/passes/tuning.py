@@ -1,12 +1,13 @@
 import cgen as c
 
 from devito.cuda.nodes import CudaCall
+from devito.cuda.types import JitOnly
 from devito.cuda.utils import tuple_to_dim3
 from devito.ir.iet.efunc import EntryFunction
 from devito.ir.iet.visitors import FindNodes
 from devito.passes.iet.engine import iet_pass
 from devito.symbolics.printer import ccode
-from devito.tools.utils import flatten
+from devito.tools.utils import as_tuple, flatten
 
 __all__ = ["kernel_tuning"]
 
@@ -99,7 +100,12 @@ def kernel_tuning(iet, **kwargs):
             ]
         )
 
+    tunes.append(c.If(JitOnly(), c.Statement("return 0")))
+
     return (
-        iet._rebuild(body=iet.body._rebuild(body=flatten(tunes + [iet.body.body]))),
+        iet._rebuild(
+            body=iet.body._rebuild(body=flatten(tunes + [iet.body.body])),
+            parameters=as_tuple(flatten([iet.parameters] + [JitOnly()])),
+        ),
         {},
     )
