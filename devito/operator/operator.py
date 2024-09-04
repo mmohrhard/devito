@@ -672,10 +672,7 @@ class Operator(Callable):
             self._jit_compile()
             self._lib = self._compiler.load(self._soname)
             self._lib.name = self._soname
-            if hasattr(self._lib, "setLogHandler"):
-                setLogHandler = self._lib.setLogHandler
-                setLogHandler.argtypes = [ctypes.c_void_p]
-                setLogHandler(operatorLogCallback)
+            self._install_operator_log_handler()
 
         if self._cfunction is None:
             self._cfunction = getattr(self._lib, self.name)
@@ -716,6 +713,15 @@ class Operator(Callable):
                 debug("`%s` successfully saved in `%s`" % (f.name, dest))
 
         return ccode, hcode
+
+    def _install_operator_log_handler(self):
+        if self._lib is None:
+            return
+
+        if hasattr(self._lib, "setLogHandler"):
+            setLogHandler = self._lib.setLogHandler
+            setLogHandler.argtypes = [ctypes.c_void_p]
+            setLogHandler(operatorLogCallback)
 
     # Execution
 
@@ -961,6 +967,7 @@ class Operator(Callable):
             self._compiler.save(soname, binary)
             self._lib = self._compiler.load(soname)
             self._lib.name = soname
+            self._install_operator_log_handler()
 
 
 # Misc helpers
