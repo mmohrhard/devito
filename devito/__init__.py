@@ -24,6 +24,13 @@ from devito.cuda import (
     DeviceFsgCudaOperator,
     DeviceCustomCudaOperator,
 )
+from devito.sycl import (
+    DeviceSyclTarget,
+    DeviceNoopSyclOperator,
+    DeviceAdvSyclOperator,
+    DeviceFsgSyclOperator,
+    DeviceCustomSyclOperator
+)
 
 # Other stuff exposed to the user
 from devito.builtins import *  # noqa
