@@ -37,9 +37,7 @@ class CudaCGen(CGen):
         ret = []
         for i in filter_sorted(args):
             is_const = i not in callable.writes
-            const_str = " const __restrict " if is_const else ""
-            # NB: not using __restrict here as nvcc sometimes produces worse
-            # code with it.
+
             # we declare all pointers as:
             #   const ftype * [const] name
             # as the pointers themselves are const regardless of the constness
@@ -47,12 +45,18 @@ class CudaCGen(CGen):
             if isinstance(i, AbstractFunction):
                 ret.append(
                     c.Value(
-                        "const %s%s" % (i.indexed._C_typename, const_str), "_" + i._name
+                        "%s%s const __restrict"
+                        % ("const " if is_const else "", i.indexed._C_typename),
+                        "_" + i._name,
                     )
                 )
             elif isinstance(i, IndexedData):
                 ret.append(
-                    c.Value("const %s%s" % (i._C_typename, const_str), "_" + i._name)
+                    c.Value(
+                        "%s%s const __restrict"
+                        % ("const " if is_const else "", i._C_typename),
+                        "_" + i._name,
+                    )
                 )
             elif i.is_AbstractObject or i.is_Symbol:
                 ret.append(c.Value(i._C_typename, i._C_name))
@@ -286,13 +290,6 @@ class CudaCGen(CGen):
             if i.local:
                 prefix = " ".join(i.root.prefix + (i.root.retval,))
                 if isinstance(i.root, CudaCallable):
-                    prefix = template_clause(i.root) + prefix
-                    esigns.append(
-                        c.FunctionDeclaration(
-                            c.Value(prefix, i.root.name),
-                            self._args_cuda_decl(i.root, i.root.parameters),
-                        )
-                    )
                     kfuncs.extend([self._visit(i.root), blankline])
                 else:
                     esigns.append(
@@ -344,7 +341,6 @@ class CudaCGen(CGen):
             + esigns
             + [blankline, kernel]
             + efuncs
-            + kfuncs
             + [c.Line("} // namespace " + o.name)]
         )
 
@@ -378,6 +374,7 @@ class MultilineCudaCall(c.Generable):
             if "/" in grid[i]:
                 grid[i] = "max(%s, 1)" % grid[i]
             threads[i] = self.threads[i]
+        grid = reversed(grid)
         grid_name = "grid"
         thread_name = "threads"
         tb_name = "tb"
@@ -392,26 +389,22 @@ class MultilineCudaCall(c.Generable):
             thread_name,
             thread_name,
         )
-        if self._preferred_sub_block is not None:
-            sub_name = thread_name + "_sub"
-            yield "\tdim3 %s = std::get<1>(%s);" % (sub_name, tune_name)
+
+        sub_name = thread_name + "_sub"
+        yield "\tdim3 %s = std::get<1>(%s);" % (sub_name, tune_name)
+        for suffix in ["x", "y", "z"]:
             yield (
-                "\t%s.x = (int)(ceil((float)%s.x / (float)(%s.x * %s.x)));"
-                % (grid_name, grid_name, thread_name, sub_name)
-            )
-            yield (
-                "\t%s.y = (int)(ceil((float)%s.y / (float)(%s.y * %s.y)));"
-                % (grid_name, grid_name, thread_name, sub_name)
-            )
-            yield (
-                "\t%s.z = (int)(ceil((float)%s.z / (float)(%s.z * %s.z)));"
-                % (grid_name, grid_name, thread_name, sub_name)
-            )
-        else:
-            yield (
-                "\tsetupGrid(%s, %s, %s, " % (grid_name, tb_name, thread_name)
-                + ", ".join(str(i) for i in grid)
-                + ");"
+                "\t%s.%s = (int)(ceil((float)%s.%s / (float)(%s.%s * %s.%s)));"
+                % (
+                    grid_name,
+                    suffix,
+                    grid_name,
+                    suffix,
+                    thread_name,
+                    suffix,
+                    sub_name,
+                    suffix,
+                )
             )
 
         yield "\tif (%s.x >= 1 && %s.y >= 1 && %s.z >= 1) {" % (
@@ -470,6 +463,14 @@ def template_clause(iet):
                 ]
             )
             + ">\n"
+            + "__launch_bounds__(%s)\n"
+            % (
+                " * ".join(
+                    p._C_name
+                    for p in template_parameters
+                    if not isinstance(p, DummyEq) and p._C_name.startswith("_block")
+                )
+            )
         )
 
     return clause

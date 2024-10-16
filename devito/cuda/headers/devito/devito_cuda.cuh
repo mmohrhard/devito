@@ -19,8 +19,10 @@
 #include <Python.h>
 #endif
 
+#ifndef STRINGIFY
 #define STRINGIFY(x) _stringify(x)
 #define _stringify(x) #x
+#endif
 
 #ifndef NVRTC_CUDA_ARCH
 // Default to compute capability 7.0 aka V100
@@ -225,8 +227,8 @@ void acquire_gil_and_raise_error(const std::string &format, Args... args) {
  * Check for pending CUDA errors, and raise a Python error
  * if one is found
  */
-bool _cudaChecked(cudaError_t err, const char *file, int line,
-                  const char *extra = nullptr) {
+inline bool _cudaChecked(cudaError_t err, const char *file, int line,
+                         const char *extra = nullptr) {
   if (err != cudaSuccess) {
     acquire_gil_and_raise_error("!!! CUDA Error in operator: %s:%d %s%s", file,
                                 line, (extra != nullptr) ? extra : "",
@@ -316,8 +318,9 @@ inline void _setupGrid(const char *gridName, dim3 &grid, dim3 &cudaTb,
     } else if (z_size > 64) {
       threadBlock = dim3(1, 1, 32);
     } else if (y_size >= 8) {
-      int y = max((int)next_pow2(min(128 / y_size, y_size)), 1);
-      int z = max(min(64, (int)next_pow2(min(128 / y, z_size))), 1);
+      int y = std::max((int)next_pow2(std::min(128 / y_size, y_size)), 1);
+      int z =
+          std::max(std::min(64, (int)next_pow2(std::min(128 / y, z_size))), 1);
       threadBlock = dim3(1, y, z);
     } else if (x_size > 128) {
       threadBlock = dim3(128, 1, 1);
@@ -506,16 +509,17 @@ static float _occupancyForKernel(CUfunction &k, const dim3 &block) {
   int block_regs = regs * block.x * block.y * block.z;
   int warp_regs = regs * 32;
 
-  int warps = (block.x * block.y * block.z) / 32;
+  int warps = (int)ceil((block.x * block.y * block.z) / 32.f);
 
   int max_sm_warps = max_sm_threads / 32;
 
-  int max_warps_per_sm_reg = max_sm_registers / warp_regs;
-  int max_block_per_sm_reg = max_sm_registers / block_regs;
+  int max_warps_per_sm_reg = (int)ceil(max_sm_registers / (float)warp_regs);
+  int max_block_per_sm_reg = (int)ceil(max_sm_registers / (float)block_regs);
 
-  int active_warps = min(max_warps_per_sm_reg, max_block_per_sm_reg * warps);
+  int active_warps =
+      std::min(max_warps_per_sm_reg, max_block_per_sm_reg * warps);
 
-  int max_block_per_sm_warp = max_sm_warps / warps;
+  int max_block_per_sm_warp = (int)ceil(max_sm_warps / (float)warps);
 
   debug("warps per sm (register limited) = %d", active_warps);
   debug("max blocks per sm (register limited) = %d", max_block_per_sm_reg);
@@ -540,7 +544,7 @@ _check_kernel(const dim3 &block, const dim3 &sub_block,
               float &occupancy) {
   // verify that it works by checking occupancy with the new block size
   CUfunction k = builder(block, sub_block);
-
+  cuFuncSetCacheConfig(k, CU_FUNC_CACHE_PREFER_L1);
   int grid = 0;
 
   is_valid = false;
@@ -655,14 +659,14 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
 
   int last_dim = dim3_get(expected_grid, max_block_dimension - 1);
 
-  int warps = threads / 32;
+  int warps = (int)ceil(threads / 32.f);
 
   debug("maximum warps = %d", warps);
   assert(warps >= 1);
 
   tuned_kernel result(preferred, preferred_sub);
 
-  dim3 block(1, 1, 32);
+  dim3 block(32, 1, 1);
 
   // Check for small dimensions
   bool small_dims[3] = {false};
@@ -736,16 +740,19 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
     }
 
     // try and make a better guess
-    nearest_square = max(1, (int)(floor(sqrtf(threads / block.z))));
+    nearest_square =
+        std::max(1, (int)(floor(sqrtf(std::max(1, threads) / (float)block.x))));
     if ((small_dims[0] || small_dims[1]) &&
         _est_waste(expected_grid,
                    dim3(nearest_square, nearest_square, block.z)) > 0.2) {
       debug("remaining small dimensions would lead to excess wasted "
             "grid points, not trying a square");
     } else {
-      next_block = dim3(
-          block.x > 1 ? min(block.x, nearest_square) : nearest_square,
-          block.y > 1 ? min(block.y, nearest_square) : nearest_square, block.z);
+      next_block = dim3(block.x,
+                        block.y > 1 ? std::min((int)block.y, nearest_square)
+                                    : nearest_square,
+                        block.z > 1 ? std::min((int)block.z, nearest_square)
+                                    : nearest_square);
       _check_kernel(next_block, preferred_sub, builder, next_valid, tmp,
                     max_block, next_regs, next_eff);
 
@@ -763,32 +770,32 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
 
       tried.emplace(std::make_tuple(next_block.x, next_block.y, next_block.z));
 
+      int yz = std::max(1, (int)ceil((float)max_block / (float)block.x));
+
+      int x = (int)(floor(sqrtf(yz)));
+      while (x > 1 && (yz % x > 0))
+        x--;
+
       // find largest grid for which (kernel max occupancy threads) %
       // (x*y*z) ~= 0
       for (int offset = 0; offset < 3 && best_eff < 0.99999; offset++) {
-        int xy = max_block / block.z;
-
-        int x = (int)(floor(sqrtf(xy)));
-        while (x > 1 && (xy % x > 0))
-          x--;
-
-        next_block = dim3(x, (xy / x), block.z);
+        int next_y = x - offset;
+        if (next_y <= 0 || yz % next_y != 0)
+          continue;
+        next_block = dim3(block.x, (yz / next_y), next_y);
 
         if (tried.find(std::make_tuple(next_block.x, next_block.y,
                                        next_block.z)) == tried.end()) {
-          // next_block.x = threads / next_block.z / next_block.y;
           debug("next guess is %d,%d,%d", next_block.x, next_block.y,
                 next_block.z);
           _check_kernel(next_block, preferred_sub, builder, next_valid, tmp,
                         max_block, next_regs, next_eff);
 
           debug(" (occupancy %.2f%%)", 100. * next_eff);
-          if (compare_options(best_eff, std::get<0>(result), next_eff,
-                              next_block)) {
-            if (next_valid) {
-              best_eff = next_eff;
-              result = tuned_kernel(next_block, preferred_sub);
-            }
+          if (next_valid && compare_options(best_eff, std::get<0>(result),
+                                            next_eff, next_block)) {
+            best_eff = next_eff;
+            result = tuned_kernel(next_block, preferred_sub);
           }
           tried.emplace(
               std::make_tuple(next_block.x, next_block.y, next_block.z));

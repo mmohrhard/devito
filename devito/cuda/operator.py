@@ -47,8 +47,12 @@ class DeviceCudaOperatorMixin(object):
         oo = kwargs["options"]
         oo.pop("openmp", None)
 
+        cuda_opts = {}
+        cuda_opts["cuda-par-block-sizes"] = oo.pop("cuda-par-block-sizes", [])
+        cuda_opts["cuda-unroll-subblocks"] = oo.pop("cuda-unroll-subblocks", True)
         kwargs = super()._normalize_kwargs(**kwargs)
         oo["cuda"] = True
+        kwargs["options"].update(cuda_opts)
 
         return kwargs
 

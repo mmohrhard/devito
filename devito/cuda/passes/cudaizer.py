@@ -32,6 +32,8 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
     def __init__(self, sregistry, options, platform, compiler):
         super().__init__(sregistry, options, platform, compiler)
         self._realign_iet_opt = options.get("realign_iet", True)
+        self._unroll_sub_blocks = options.get("cuda-unroll-subblocks", True)
+        self._block_sizes = options.get("cuda-par-block-sizes", [])
 
     def _extract_kernels(self, candidates, nthreads=None):
         assert candidates
@@ -188,30 +190,83 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
         # Now, generate the iteration dimension variables from the blockIdx/threadIdx
         # These end up reversed because warp thread order in CUDA for >1D is column-major
         # and we want contiguous memory access
-        dim_vars = ["x", "y", "z"]
+        dim_vars = ["z", "y", "x"]
 
         kernel = []
         args = set()
 
         # TODO: tune sub-blocking
-        sub_blocks = [1] * (len(valid_dims) - 1)
-        if len(sub_blocks) > 0:
-            sub_blocks[0] = 2
+        sub_blocks = [1, 1, 1]
+        num_subblocks = max(0, len(valid_dims) - 1)
 
         # TODO: figure out something better based on looking at access for spatial reuse
-        block = [1] * len(valid_dims)
+        block = [1, 1, 1]
         # always want at least one warp worth, and preferably a
         # multiple of warps
-        block[-1] = 32
+        block[0] = 32
 
-        if len(block) == 3:
-            block[0] = 1
-            block[1] = 32
-        elif len(block) == 2:
-            block[0] = 16
-        else:
+        if len(valid_dims) == 3:
+            block[2] = 2
+            block[1] = 4
+            sub_blocks[0] = 1
+        elif len(valid_dims) == 1:
             block[0] = 128
 
+        if not any(s > 1 for s in sub_blocks):
+            num_subblocks = 0
+
+        # allow overriding in options
+        if isinstance(self._block_sizes, dict):
+            # filtered by kernel name
+            for n in self._block_sizes:
+                if n in name:
+                    bs = self._block_sizes[n]
+                    if (
+                        len(bs) == 2
+                        and isinstance(bs[0], tuple)
+                        and isinstance(bs[1], tuple)
+                    ):
+                        for d in range(0, 3):
+                            if len(bs[0]) > d:
+                                block[d] = bs[0][d]
+                            else:
+                                block[d] = 1
+
+                            if len(bs[1]) > d:
+                                sub_blocks[d] = bs[1][-(d + 1)]
+                            else:
+                                sub_blocks[d] = 1
+
+                            if sub_blocks[d] > 1:
+                                num_subblocks = max(num_subblocks, 3 - d)
+        elif (
+            isinstance(self._block_sizes, tuple)
+            and len(self._block_sizes) == 2
+            and isinstance(self._block_sizes[0], tuple)
+            and isinstance(self._block_sizes[1], tuple)
+        ):
+            # generic for all kernels
+            bs = self._block_sizes
+            for d in range(0, 3):
+                if len(bs[0]) > d:
+                    block[d] = bs[0][d]
+                else:
+                    block[d] = 1
+
+                if len(bs[1]) > d:
+                    sub_blocks[d] = bs[1][-(d + 1)]
+                else:
+                    sub_blocks[d] = 1
+
+                if sub_blocks[d] > 1:
+                    num_subblocks = max(num_subblocks, 3 - d)
+
+        for idx in range(0, 3):
+            if sub_blocks[-(1 + idx)] > 1:
+                num_subblocks = 3 - idx
+                break
+
+        num_subblocks = min(len(valid_dims), num_subblocks)
         setup_iter = []
 
         iter_filter = []
@@ -221,7 +276,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             limits = iters[0].limits
             symbols = flatten([i.expr_symbols for i in iters])
 
-            has_sub_block = v < len(valid_dims) - 1
+            has_sub_block = v < num_subblocks
 
             # TODO: Don't just jam C++ in here; turn it into nodes that we lower
             # into C++ at codegen time
@@ -273,14 +328,24 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
 
         body = setup_iter + iter_filter + [iet]
 
-        for v in reversed(range(0, len(sub_blocks))):
+        unroll_sub_blocks = self._unroll_sub_blocks
+        if isinstance(self._unroll_sub_blocks, dict):
+            for n in self._unroll_sub_blocks:
+                if n in name:
+                    unroll_sub_blocks = self._unroll_sub_blocks[n]
+
+        for v in reversed(range(0, num_subblocks)):
             dim, iters = valid_dims[v]
+
+            should_unroll = unroll_sub_blocks is True or (
+                unroll_sub_blocks >= 1 and unroll_sub_blocks <= v
+            )
 
             sub_var = "_sub_block_%s" % dim_vars[v]
             sub_iterator = "_" + dim_vars[v] + dim_vars[v]
             body = (
                 [
-                    c.Line("#pragma unroll"),
+                    c.Line("#pragma unroll") if should_unroll else c.Line(""),
                     c.Line(
                         "for (int %s = 0; %s < %s; %s++) {"
                         % (sub_iterator, sub_iterator, sub_var, sub_iterator)

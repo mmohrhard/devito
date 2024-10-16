@@ -228,7 +228,7 @@ class CudaCallable(DeviceFunction):
 
     @property
     def block_arguments(self):
-        dims = ["x", "y", "z"]
+        dims = ["z", "y", "x"]
         return [
             DummyEq(TemplateParameter(f"_block_{d[1]}"), d[0])
             for d in zip(self._preferred_block, dims)
@@ -236,7 +236,7 @@ class CudaCallable(DeviceFunction):
 
     @property
     def sub_block_arguments(self):
-        dims = ["x", "y", "z"]
+        dims = ["z", "y", "x"]
         return [
             DummyEq(TemplateParameter(f"_sub_block_{d[1]}"), d[0])
             for d in zip(self._preferred_sub_block, dims)
