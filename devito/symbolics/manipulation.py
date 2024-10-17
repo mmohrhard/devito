@@ -5,6 +5,7 @@ from functools import singledispatch
 from sympy import LM, LC, Pow, Add, Mul, Min, Max
 from sympy.core.add import _addsort
 from sympy.core.mul import _mulsort
+from sympy.functions.elementary.piecewise import ExprCondPair
 
 from devito.symbolics.extended_sympy import rfunc
 from devito.symbolics.queries import q_leaf
@@ -215,6 +216,8 @@ def pow_to_mul(expr):
             # but just in case SymPy changes its internal conventions...
             posexpr = Mul(*[base]*(-int(exp)), evaluate=False)
             return Pow(posexpr, -1, evaluate=False)
+    elif expr.func is ExprCondPair:
+        return expr.func(*[pow_to_mul(i) for i in expr.args])
     else:
         return expr.func(*[pow_to_mul(i) for i in expr.args], evaluate=False)
 
