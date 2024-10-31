@@ -233,7 +233,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
                                 block[d] = 1
 
                             if len(bs[1]) > d:
-                                sub_blocks[d] = bs[1][-(d + 1)]
+                                sub_blocks[d] = bs[1][d]
                             else:
                                 sub_blocks[d] = 1
 
@@ -254,7 +254,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
                     block[d] = 1
 
                 if len(bs[1]) > d:
-                    sub_blocks[d] = bs[1][-(d + 1)]
+                    sub_blocks[d] = bs[1][d]
                 else:
                     sub_blocks[d] = 1
 
@@ -272,6 +272,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
         iter_filter = []
 
         for v in range(0, len(valid_dims)):
+            dv = v - len(valid_dims)
             dim, iters = valid_dims[v]
             limits = iters[0].limits
             symbols = flatten([i.expr_symbols for i in iters])
@@ -280,28 +281,26 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
 
             # TODO: Don't just jam C++ in here; turn it into nodes that we lower
             # into C++ at codegen time
-            l_idx = "((threadIdx.x %s) %% _block_%s)%s" % (
+            l_idx = "((threadIdx.x%s) %% _block_%s)%s" % (
                 (
                     ""
                     if v == len(valid_dims) - 1
                     else (
-                        "/ (%s)"
-                        % " * ".join(
-                            "_block_%s" % x for x in dim_vars[v + 1 : len(valid_dims)]
-                        )
+                        " / (%s)"
+                        % " * ".join("_block_%s" % x for x in dim_vars[dv + 1 :])
                     )
                 ),
-                dim_vars[v],
-                "* _sub_block_" + dim_vars[v] + " " if has_sub_block else "",
+                dim_vars[dv],
+                " * _sub_block_" + dim_vars[dv] + " " if has_sub_block else "",
             )
             kernel.append(
                 c.Initializer(
                     c.Value("int", dim.name + ("_0" if has_sub_block else "")),
                     "blockIdx.%s * _block_%s %s+ %s"
                     % (
-                        dim_vars[v],
-                        dim_vars[v],
-                        ("* _sub_block_" + dim_vars[v] + " " if has_sub_block else ""),
+                        dim_vars[dv],
+                        dim_vars[dv],
+                        (" * _sub_block_" + dim_vars[dv] + " " if has_sub_block else ""),
                         l_idx,
                     ),
                 )
@@ -309,7 +308,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             args = args.union(symbols)
 
             if has_sub_block:
-                sub_iterator = "_" + dim_vars[v] + dim_vars[v]
+                sub_iterator = "_" + dim_vars[dv] + dim_vars[dv]
                 setup_iter.append(
                     c.Initializer(
                         c.Value("int", dim.name),
@@ -334,15 +333,16 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
                 if n in name:
                     unroll_sub_blocks = self._unroll_sub_blocks[n]
 
-        for v in reversed(range(0, num_subblocks)):
+        for v in range(0, num_subblocks):
+            dv = v - len(valid_dims)
             dim, iters = valid_dims[v]
 
             should_unroll = unroll_sub_blocks is True or (
-                unroll_sub_blocks >= 1 and unroll_sub_blocks <= v
+                unroll_sub_blocks >= 1 and unroll_sub_blocks < (len(valid_dims) - v)
             )
 
-            sub_var = "_sub_block_%s" % dim_vars[v]
-            sub_iterator = "_" + dim_vars[v] + dim_vars[v]
+            sub_var = "_sub_block_%s" % dim_vars[dv]
+            sub_iterator = "_" + dim_vars[dv] + dim_vars[dv]
             body = (
                 [
                     c.Line("#pragma unroll") if should_unroll else c.Line(""),

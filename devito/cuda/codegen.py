@@ -367,11 +367,11 @@ class MultilineCudaCall(c.Generable):
         grid = [1, 1, 1]
         threads = [1, 1, 1]
         for i in range(0, len(self.grid)):
-            grid[i] = str(self.grid[i])
-            if "/" in grid[i]:
-                grid[i] = "max(%s, 1)" % grid[i]
+            expr = str(self.grid[-1 - i])
+            if "/" in expr:
+                expr = "max(%s, 1)" % expr
+            grid[i] = expr
             threads[i] = self.threads[i]
-        grid = reversed(grid)
         grid_name = "grid"
         thread_name = "threads"
         tb_name = "tb"

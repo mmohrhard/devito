@@ -42,7 +42,7 @@ def kernel_tuning(iet, **kwargs):
         if call.preferred_block is None:
             continue
         setup_lambda = "[&](dim3 block, dim3 sub_block) {\n"
-        suffix = [".z", ".y", ".x"]
+        suffix = [".x", ".y", ".z"]
         block_parameters = ["block" + suffix[i] for i in range(len(call.preferred_block))]
         subblock_parameters = [
             "sub_block" + suffix[i]
