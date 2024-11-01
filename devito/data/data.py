@@ -72,6 +72,9 @@ class Data(np.ndarray):
         return obj
 
     def __del__(self):
+        self.free()
+
+    def free(self):
         if getattr(self, "_memfree_args", None) is None:
             # NOTE: The need for `getattr`, in place of `self._memfree_args`, was
             # suggested for the first time in issue #1184. However, it appears
