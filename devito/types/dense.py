@@ -29,10 +29,19 @@ from devito.types.utils import Buffer, DimensionTuple, NODE, CELL
 
 import nvtx
 
-__all__ = ['Function', 'TimeFunction', 'SubFunction', 'TempFunction']
+__all__ = ['Function', 'TimeFunction', 'SubFunction', 'TempFunction', 'free_data']
 
 
 RegionMeta = namedtuple('RegionMeta', 'offset size')
+
+
+def free_data(f: "DiscreteFunction") -> None:
+    if f._data is not None:
+        f._data.free()
+        f._data = None
+    if f._device_data is not None:
+        f._device_data.free()
+        f._device_data = None
 
 
 class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
@@ -1033,7 +1042,9 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
             or self._device_data.shape != args[key.name].shape
         ):
             # Make sure that the device allocation matches the size expected
-            self._device_data = None
+            if self._device_data is not None:
+                self._device_data.free()
+                self._device_data = None
             self._device_data = self._DeviceDataType(self.shape_alocated,
                                                      self.dtype,
                                                      allocator=self._device_allocator)

@@ -15,7 +15,7 @@ from devito.symbolics import (INT, FLOOR, cast_mapper, indexify,
 from devito.tools import (ReducerMap, as_tuple, flatten, prod, filter_ordered,
                           memoized_meth, is_integer)
 from devito.tools.utils import c_restrict_void_p
-from devito.types.dense import DiscreteFunction, Function, SubFunction
+from devito.types.dense import DiscreteFunction, Function, SubFunction, free_data
 from devito.types.dimension import (Dimension, ConditionalDimension, DefaultDimension,
                                     DynamicDimension)
 from devito.types.basic import Symbol
@@ -1372,27 +1372,18 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
         # The sympy cache holds the symbol references, but we can break the link
         # between the symbol and the data, thus causing the memory to be freed
         # This renders the object useless
-        self._data = None
-        self._device_data = None
-        self._gridpoints._data = None
-        self._gridpoints._device_data = None
-        self._mrow._data = None
-        self._mrow._device_data = None
-        self._mcol._data = None
-        self._mcol._device_data = None
-        self._mval._data = None
-        self._mval._device_data = None
+        free_data(self)
+        free_data(self._gridpoints)
+        free_data(self._mrow)
+        free_data(self._mcol)
+        free_data(self._mval)
 
         for f in self.interpolation_coefficients.values():
-            f._data = None
-            f._device_data = None
+            free_data(f)
 
-        self._par_dim_to_nnz_map._data = None
-        self._par_dim_to_nnz_map._device_data = None
-        self._par_dim_to_nnz_m._data = None
-        self._par_dim_to_nnz_m._device_data = None
-        self._par_dim_to_nnz_M._data = None
-        self._par_dim_to_nnz_M._device_data = None
+        free_data(self._par_dim_to_nnz_map)
+        free_data(self._par_dim_to_nnz_m)
+        free_data(self._par_dim_to_nnz_M)
 
         self.scatter_result = None
         self.scattered_data = None
@@ -1831,18 +1822,15 @@ class MatrixSparseTimeFunction(AbstractSparseTimeFunction):
         # using our expected allocator
         debug(f"resizing par_dim_to_nnz_map/m/M to {reordering.astype(np.int32).shape}, {reordered_m.astype(np.int32).shape}, {reordered_M.astype(np.int32).shape}")
         self._resize_subfunction(self._par_dim_to_nnz_map, reordering.shape)
-        self._par_dim_to_nnz_map._data = None
-        self._par_dim_to_nnz_map._device_data = None
+        free_data(self._par_dim_to_nnz_map)
         self.par_dim_to_nnz_map.data[:] = reordering.astype(np.int32)
 
         self._resize_subfunction(self._par_dim_to_nnz_m, reordered_m.shape)
-        self._par_dim_to_nnz_m._data = None
-        self._par_dim_to_nnz_m._device_data = None
+        free_data(self._par_dim_to_nnz_m)
         self.par_dim_to_nnz_m.data[:] = reordered_m.astype(np.int32)
 
         self._resize_subfunction(self._par_dim_to_nnz_M, reordered_M.shape)
-        self._par_dim_to_nnz_M._data = None
-        self._par_dim_to_nnz_M._device_data = None
+        free_data(self._par_dim_to_nnz_M)
         self.par_dim_to_nnz_M.data[:] = reordered_M.astype(np.int32)
 
         # return output suitable for scatter
