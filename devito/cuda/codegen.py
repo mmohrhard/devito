@@ -214,7 +214,6 @@ class CudaCGen(CGen):
 
             return c.Statement("prepareDataObject(%s)" % ", ".join(prep_args))
         else:
-            method = "transferDataObject"
             dest_args = [xfer_name, o.name, o.size]
 
             dest_args.append(ccode(o.condition) if o.condition is not None else "true")
@@ -225,9 +224,7 @@ class CudaCGen(CGen):
 
             dest_args.append(f'"{o.name}"')
 
-            return c.Statement(
-                "if (%s(%s) < 0) return -1" % (method, ", ".join(dest_args))
-            )
+            return c.Statement("transferDataObject(%s)" % ", ".join(dest_args))
 
     def visit_CudaAlloc(self, o):
         prep_args = [o.name, o.size]

@@ -242,10 +242,11 @@ class DeviceSymbol(Scalar):
 
     is_Input = True
     is_PerfKnob = True
+    is_Const = True
 
     def __new__(cls, *args, **kwargs):
         kwargs.setdefault('name', cls.name)
-        kwargs.setdefault('is_const', True)
+        kwargs.setdefault('is_const', cls.is_Const)
         return super().__new__(cls, **kwargs)
 
     @classmethod
@@ -281,6 +282,7 @@ class DeviceCreate(DeviceSymbol):
 class DeviceRM(DeviceSymbol):
 
     name = 'devicerm'
+    is_Const = False
 
     @property
     def default_value(self):

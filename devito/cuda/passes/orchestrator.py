@@ -195,6 +195,8 @@ class CudaOrchestrator(Orchestrator):
 
         sync_spots = FindNodes(SyncSpot).visit(iet)
 
+        check_exception_raised = [c.Line("devicerm |= exceptionOccured();")]
+
         if not sync_spots:
             if isinstance(iet, EntryFunction):
                 # yuck
@@ -206,6 +208,7 @@ class CudaOrchestrator(Orchestrator):
                             CudaChecked(Call("cudaStreamSynchronize", MemCopyStream())),
                             CudaChecked(Call("cudaStreamSynchronize", HostStream())),
                         ]
+                        + check_exception_raised
                     )
                 )
             return iet, {}
@@ -253,6 +256,7 @@ class CudaOrchestrator(Orchestrator):
                     CudaChecked(Call("cudaStreamSynchronize", MemCopyStream())),
                     CudaChecked(Call("cudaStreamSynchronize", HostStream())),
                 ]
+                + check_exception_raised
             )
         )
 

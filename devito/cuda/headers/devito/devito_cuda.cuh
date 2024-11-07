@@ -820,3 +820,17 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   nvtxRangePop();
   return result;
 }
+
+
+static bool
+exceptionOccured() {
+#ifndef OPERATOR_STANDALONE
+  PyGILState_STATE gstate;
+  gstate = PyGILState_Ensure();
+  bool exceptionOccured = PyErr_Occurred() != NULL;
+  PyGILState_Release(gstate);
+  return exceptionOccured;
+#else
+  return false;
+#endif
+}
