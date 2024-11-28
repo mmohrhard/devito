@@ -537,14 +537,20 @@ static float _occupancyForKernel(CUfunction &k, const dim3 &block) {
                            fminf(warp_sm_occupancy, block_sm_reg_occupancy)));
 }
 
+std::mutex kernel_compile_mutex;
+
 static bool
 _check_kernel(const dim3 &block, const dim3 &sub_block,
               std::function<jitify::KernelInstantiation(dim3, dim3)> &builder,
               bool &is_valid, float &est_occupancy, int &max_block, int &regs,
               float &occupancy) {
   // verify that it works by checking occupancy with the new block size
-  CUfunction k = builder(block, sub_block);
-  cuFuncSetCacheConfig(k, CU_FUNC_CACHE_PREFER_L1);
+  CUfunction k = NULL;
+  {
+    std::lock_guard<std::mutex> lock(kernel_compile_mutex);
+    k = builder(block, sub_block);
+    cuFuncSetCacheConfig(k, CU_FUNC_CACHE_PREFER_L1);
+  }
   int grid = 0;
 
   is_valid = false;
@@ -600,8 +606,6 @@ inline bool compare_options(float occupancy1, const dim3 &block1,
   return true;
 }
 
-std::mutex cache_mutex;
-
 static tuned_kernel
 performTuning(tuningDict &tuning, const char *name, dim3 preferred,
               dim3 preferred_sub, dim3 expected_grid, int max_block_dimension,
@@ -610,20 +614,19 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   int device = 0;
   int max_sm_resident_blocks = 0;
   int sm_count = 0;
+  CUfunction cf = NULL;
 
   cudaGetDevice(&device);
   cudaDeviceGetAttribute(&max_sm_resident_blocks,
                          cudaDevAttrMaxBlocksPerMultiprocessor, device);
   cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device);
-
-  int max_block = 0;
-
-  auto tmp_kernel = builder(preferred, preferred_sub);
-
-  // Calculate the maximum possible occupancy for the preferred block size
-  CUfunction cf = (CUfunction)tmp_kernel;
   {
-    std::lock_guard<std::mutex> lock(cache_mutex);
+    std::lock_guard<std::mutex> lock(kernel_compile_mutex);
+
+    auto tmp_kernel = builder(preferred, preferred_sub);
+
+    // Calculate the maximum possible occupancy for the preferred block size
+    cf = (CUfunction)tmp_kernel;
     if (tuning.find(cf) != tuning.end()) {
       nvtxRangePop();
       return tuning.at(cf);
@@ -638,6 +641,7 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
         expected_grid.z);
 
   int grid;
+  int max_block = 0;
 
   CUresult res =
       cuOccupancyMaxPotentialBlockSize(&grid, &max_block, cf, nullptr, 0, 0);
@@ -690,7 +694,7 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   float best_eff = _occupancyForKernel(cf, preferred);
   debug("base occupancy is %.2f", best_eff);
   if (best_eff > 0.66) {
-    std::lock_guard<std::mutex> lock(cache_mutex);
+    std::lock_guard<std::mutex> lock(kernel_compile_mutex);
     tuning[cf] = result;
     nvtxRangePop();
     return tuning[cf];
@@ -814,7 +818,7 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
         std::get<1>(result).x, std::get<1>(result).y, std::get<1>(result).z,
         best_eff);
   {
-    std::lock_guard<std::mutex> lock(cache_mutex);
+    std::lock_guard<std::mutex> lock(kernel_compile_mutex);
     tuning[cf] = result;
   }
   nvtxRangePop();
