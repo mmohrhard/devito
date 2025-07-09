@@ -4,8 +4,8 @@ import numpy as np
 from cached_property import cached_property
 
 from devito.ir.equations import ClusterizedEq
-from devito.ir.support import (PARALLEL, PARALLEL_IF_PVT, BaseGuardBoundNext, Forward,
-                               Interval, IntervalGroup, IterationSpace, DataSpace, Scope,
+from devito.ir.support import (PARALLEL, PARALLEL_IF_PVT, SUPPRESS_FUSION, BaseGuardBoundNext,
+                               Forward, Interval, IntervalGroup, IterationSpace, DataSpace, Scope,
                                detect_accesses, detect_io, normalize_properties,
                                normalize_syncs)
 from devito.symbolics import estimate_cost
@@ -40,13 +40,26 @@ class Cluster(object):
     def __init__(self, exprs, ispace=None, guards=None, properties=None, syncs=None):
         ispace = ispace or IterationSpace([])
 
-        self._exprs = tuple(ClusterizedEq(e, ispace=ispace) for e in as_tuple(exprs))
+        exprs = as_tuple(exprs)
+        self._exprs = tuple(ClusterizedEq(e, ispace=ispace) for e in exprs)
         self._ispace = ispace
         self._guards = frozendict(guards or {})
         self._syncs = frozendict(syncs or {})
 
         properties = dict(properties or {})
-        properties.update({i.dim: properties.get(i.dim, set()) for i in ispace.intervals})
+        properties.update(
+            {i.dim: properties.get(i.dim, set()) for i in ispace.intervals}
+        )
+        suppress_fusion_dims = set(
+            flatten(as_tuple(e.suppress_fusion_dims or set()) for e in exprs)
+        )
+
+        properties.update(
+            {
+                d: {SUPPRESS_FUSION} | properties.get(d, set())
+                for d in suppress_fusion_dims
+            }
+        )
         self._properties = frozendict(properties)
 
     def __repr__(self):

@@ -81,6 +81,12 @@ could be separated into three one-dimensional iteration spaces
       c c
 """
 
+SUPPRESS_FUSION = Property("suppress_fusion")
+"""
+Don't allow this Eq/Cluster to end up fused into a loop with other Eq/Clusters
+on the specified dimension[s].
+"""
+
 
 def normalize_properties(*args):
     if not args:

@@ -197,7 +197,7 @@ class Array(ArrayBasic):
 
     @property
     def _mem_stack(self):
-        return self._scope == 'stack'
+        return self._scope == 'stack' or self._scope == 'static'
 
     @property
     def _mem_heap(self):
@@ -213,6 +213,10 @@ class Array(ArrayBasic):
 
     def _make_pointer(self, dim):
         return PointerArray(name='p%s' % self.name, dimensions=dim, array=self)
+
+    @property
+    def readonly(self):
+        return self._readonly
 
 
 class ArrayMapped(Array):

@@ -122,9 +122,18 @@ class Fusion(Queue):
                 processed.extend(maybe_fusible)
             else:
                 try:
-                    # Perform fusion
-                    fused = Cluster.from_clusters(*maybe_fusible)
-                    processed.append(fused)
+                    non_fusible = []
+                    fusible = []
+                    for c in maybe_fusible:
+                        if any(e.suppress_fusion_dims for e in c.exprs):
+                            non_fusible.append(c)
+                        else:
+                            fusible.append(c)
+
+                    if len(non_fusible) > 0:
+                        processed.extend(non_fusible)
+                    if len(fusible) > 0:
+                        processed.append(Cluster.from_clusters(*fusible))
                 except ValueError:
                     # We end up here if, for example, some Clusters have same
                     # iteration Dimensions but different (partial) orderings

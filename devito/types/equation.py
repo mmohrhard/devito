@@ -37,6 +37,9 @@ class Eq(sympy.Eq, Evaluable):
         An ordered list of Dimensions that do not explicitly appear in either the
         left-hand side or in the right-hand side, but that should be honored when
         constructing an Operator.
+    suppress_fusion_dims: Dimension or list of Dimensions, optional
+        A list of dimensions that this Eq should consider unavailable for loop
+        fusion.
 
     Examples
     --------
@@ -60,16 +63,25 @@ class Eq(sympy.Eq, Evaluable):
 
     is_Reduction = False
 
-    __rargs__ = ('lhs', 'rhs')
-    __rkwargs__ = ('subdomain', 'coefficients', 'implicit_dims')
+    __rargs__ = ("lhs", "rhs")
+    __rkwargs__ = ("subdomain", "coefficients", "implicit_dims", "suppress_fusion_dims")
 
-    def __new__(cls, lhs, rhs=0, subdomain=None, coefficients=None, implicit_dims=None,
-                **kwargs):
-        kwargs['evaluate'] = False
+    def __new__(
+        cls,
+        lhs,
+        rhs=0,
+        subdomain=None,
+        coefficients=None,
+        implicit_dims=None,
+        suppress_fusion_dims=None,
+        **kwargs,
+    ):
+        kwargs["evaluate"] = False
         obj = sympy.Eq.__new__(cls, lhs, rhs, **kwargs)
         obj._subdomain = subdomain
         obj._substitutions = coefficients
         obj._implicit_dims = as_tuple(implicit_dims)
+        obj._suppress_fusion_dims = suppress_fusion_dims or list()
 
         return obj
 
@@ -84,9 +96,14 @@ class Eq(sympy.Eq, Evaluable):
             rhs = self.rhs._eval_at(self.lhs)._evaluate(**kwargs)
         except AttributeError:
             lhs, rhs = self._evaluate_args(**kwargs)
-        eq = self.func(lhs, rhs, subdomain=self.subdomain,
-                       coefficients=self.substitutions,
-                       implicit_dims=self._implicit_dims)
+        eq = self.func(
+            lhs,
+            rhs,
+            subdomain=self.subdomain,
+            coefficients=self.substitutions,
+            implicit_dims=self._implicit_dims,
+            suppress_fusion_dims=self._suppress_fusion_dims,
+        )
 
         if eq._uses_symbolic_coefficients:
             # NOTE: As Coefficients.py is expanded we will not want
@@ -110,10 +127,17 @@ class Eq(sympy.Eq, Evaluable):
             # Get the relevant equations from the lhs structure. .values removes
             # the symmetric duplicates and off-diagonal zeros.
             lhss = self.lhs.values()
-            return [self.func(l, eqs[l], subdomain=self.subdomain,
-                              coefficients=self.substitutions,
-                              implicit_dims=self._implicit_dims)
-                    for l in lhss]
+            return [
+                self.func(
+                    l,
+                    eqs[l],
+                    subdomain=self.subdomain,
+                    coefficients=self.substitutions,
+                    implicit_dims=self._implicit_dims,
+                    suppress_fusion_dims=self._suppress_fusion_dims,
+                )
+                for l in lhss
+            ]
         else:
             return [self]
 
@@ -151,12 +175,21 @@ class Eq(sympy.Eq, Evaluable):
         except AttributeError:
             return frozenset()
         else:
-            TypeError('Failed to retrieve symbolic functions')
+            TypeError("Failed to retrieve symbolic functions")
+
+    @property
+    def suppress_fusion_dims(self):
+        return self._suppress_fusion_dims
 
     func = Evaluable._rebuild
 
     def xreplace(self, rules):
-        return self.func(self.lhs.xreplace(rules), self.rhs.xreplace(rules))
+        new_suppress_dims = [rules.get(d, d) for d in self._suppress_fusion_dims or []]
+        return self.func(
+            self.lhs.xreplace(rules),
+            self.rhs.xreplace(rules),
+            suppress_fusion_dims=new_suppress_dims,
+        )
 
     def __str__(self):
         return "%s(%s, %s)" % (self.__class__.__name__, self.lhs, self.rhs)

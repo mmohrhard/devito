@@ -13,9 +13,14 @@ __all__ = ['LoweredEq', 'ClusterizedEq', 'DummyEq', 'OpInc', 'OpMin', 'OpMax']
 
 
 class IREq(sympy.Eq, Pickable):
-
-    __rargs__ = ('lhs', 'rhs')
-    __rkwargs__ = ('ispace', 'conditionals', 'implicit_dims', 'operation')
+    __rargs__ = ("lhs", "rhs")
+    __rkwargs__ = (
+        "ispace",
+        "conditionals",
+        "implicit_dims",
+        "operation",
+        "suppress_fusion_dims",
+    )
 
     @property
     def is_Scalar(self):
@@ -62,6 +67,10 @@ class IREq(sympy.Eq, Pickable):
     @property
     def is_Increment(self):
         return self.operation is OpInc
+
+    @property
+    def suppress_fusion_dims(self):
+        return self._suppress_fusion_dims
 
     def apply(self, func):
         """
@@ -130,6 +139,7 @@ class LoweredEq(IREq):
     __rkwargs__ = IREq.__rkwargs__ + ('reads', 'writes')
 
     def __new__(cls, *args, **kwargs):
+        suppress_fusion_dims = None
         if len(args) == 1 and isinstance(args[0], LoweredEq):
             # origin: LoweredEq(devito.LoweredEq, **kwargs)
             input_expr = args[0]
@@ -140,6 +150,7 @@ class LoweredEq(IREq):
         elif len(args) == 1 and isinstance(args[0], Eq):
             # origin: LoweredEq(devito.Eq)
             input_expr = expr = args[0]
+            suppress_fusion_dims = expr.suppress_fusion_dims
         elif len(args) == 2:
             expr = sympy.Eq.__new__(cls, *args, evaluate=False)
             for i in cls.__rkwargs__:
@@ -198,6 +209,7 @@ class LoweredEq(IREq):
         expr._reads, expr._writes = detect_io(expr)
         expr._implicit_dims = input_expr.implicit_dims
         expr._operation = Operation.detect(input_expr)
+        expr._suppress_fusion_dims = suppress_fusion_dims
 
         return expr
 
@@ -254,6 +266,11 @@ class ClusterizedEq(IREq):
                 expr._conditionals = kwargs.get('conditionals', frozendict())
                 expr._implicit_dims = input_expr.implicit_dims
                 expr._operation = Operation.detect(input_expr)
+                expr._suppress_fusion_dims = kwargs.get("suppress_fusion_dims", None)
+                try:
+                    expr._suppress_fusion_dims = input_expr.suppress_fusion_dims
+                except:
+                    pass
         elif len(args) == 2:
             # origin: ClusterizedEq(lhs, rhs, **kwargs)
             expr = sympy.Eq.__new__(cls, *args, evaluate=False)

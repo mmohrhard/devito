@@ -6,13 +6,26 @@ import numpy as np
 import sympy
 
 from devito.exceptions import InvalidOperator
-from devito.ir.support import Any, Backward, Forward, IterationSpace, PARALLEL_IF_ATOMIC
 from devito.ir.clusters.analysis import analyze
 from devito.ir.clusters.cluster import Cluster, ClusterGroup
 from devito.ir.clusters.visitors import Queue, QueueStateful, cluster_pass
+from devito.ir.support import (
+    PARALLEL_IF_ATOMIC,
+    SUPPRESS_FUSION,
+    Any,
+    Backward,
+    Forward,
+    IterationSpace,
+)
 from devito.symbolics import retrieve_indexed, uxreplace, xreplace_indices
-from devito.tools import (DefaultOrderedDict, Stamp, as_mapper, flatten,
-                          is_integer, timed_pass)
+from devito.tools import (
+    DefaultOrderedDict,
+    Stamp,
+    as_mapper,
+    flatten,
+    is_integer,
+    timed_pass,
+)
 from devito.types import Array, Eq, Inc, Symbol
 from devito.types.dimension import BOTTOM, ModuloDimension
 
@@ -134,8 +147,26 @@ class Schedule(QueueStateful):
         # Enforce iteration direction on each Cluster
         processed = []
         for c in clusters:
-            ispace = IterationSpace(c.ispace.intervals, c.ispace.sub_iterators,
-                                    {**c.ispace.directions, **idir})
+            stamp = Stamp()
+
+            # Identify dimensions that should not be fused
+            no_fuse_dims = {k for k, v in c.properties.items() if SUPPRESS_FUSION in v}
+
+            # Collect dimensions that need to be lifted
+            lift_dims = {d.dim for d in prefix
+                        if any(dd in no_fuse_dims for dd in d.dim._defines)}
+
+            # Create new iteration space, lifting dimensions if necessary
+            intervals = c.ispace.intervals
+            if lift_dims:
+                intervals = intervals.lift(lift_dims, stamp)
+
+            ispace = IterationSpace(
+                intervals,
+                c.ispace.sub_iterators,
+                {**c.ispace.directions, **idir}
+            )
+
             processed.append(c.rebuild(ispace=ispace))
 
         if not backlog:
