@@ -3,7 +3,8 @@ from collections import OrderedDict
 from devito.ir import Cluster, Scope, cluster_pass
 from devito.passes.clusters.utils import makeit_ssa
 from devito.symbolics import count, estimate_cost, q_xop, q_leaf, uxreplace
-from devito.types import Eq, Symbol
+from devito.types import Eq, Symbol, Scalar
+from devito.tools import toposort
 
 __all__ = ['cse']
 
@@ -13,17 +14,17 @@ class Temp(Symbol):
 
 
 @cluster_pass
-def cse(cluster, sregistry, *args):
+def cse(cluster, sregistry, *args, toposort=True):
     """
     Common sub-expressions elimination (CSE).
     """
     make = lambda: Temp(name=sregistry.make_name(), dtype=cluster.dtype).indexify()
-    exprs = _cse(cluster, make)
+    exprs = _cse(cluster, make, do_toposort=toposort)
 
     return cluster.rebuild(exprs=exprs)
 
 
-def _cse(maybe_exprs, make, mode='default'):
+def _cse(maybe_exprs, make, mode='default', do_toposort=True):
     """
     Main common sub-expressions elimination routine.
 
@@ -37,6 +38,11 @@ def _cse(maybe_exprs, make, mode='default'):
         Build symbols to store temporary, redundant values.
     mode : str, optional
         The CSE algorithm applied. Accepted: ['default'].
+    do_toposort : bool, optional
+        Whether to perform a topological sort of the output expressions
+        to ensure that any user-provided expressions defining local
+        scalar symbols are not unexpectedly reordered.
+        Default is True.
     """
 
     # Note: not defaulting to SymPy's CSE() function for three reasons:
@@ -55,6 +61,10 @@ def _cse(maybe_exprs, make, mode='default'):
     else:
         processed = list(maybe_exprs)
         scope = Scope(maybe_exprs)
+
+
+    # We can elide the toposort in cases where no input expression declares a local symbol
+    needs_toposort = any(isinstance(e.lhs, (Temp, Scalar)) for e in processed)
 
     # Some sub-expressions aren't really "common" -- that's the case of Dimension-
     # independent data dependences. For example:
@@ -97,7 +107,27 @@ def _cse(maybe_exprs, make, mode='default'):
         # Prepare for the next round
         for k in picked:
             targets.pop(k)
+
     processed = mapped + processed
+
+    if do_toposort and needs_toposort:
+        # Now, perform a topological sort to ensure we don't break dependencies
+        # (specifically for cases where the user-provided expressions declare
+        # and then refer to locally-scoped symbols (eg Scalar values); the
+        # previous behaviour assumed that all input expressions referred only
+        # to symbols that already existed in the enclosing scope)
+        available = set(m.lhs for m in processed)
+
+        # Build a dependency graph for symbols that appear on the
+        # lhs of the expressions we're currently processing
+        deps = OrderedDict({e.lhs: (set(e.rhs.free_symbols) & available) for e in processed})
+        processed = OrderedDict({e.lhs : e for e in processed})
+
+        # Do the topological sort, and then reorder the expressions accordingly
+        out = []
+        for lhs in reversed(toposort(deps)):
+            out.append(processed[lhs])
+        processed = out
 
     # At this point we may have useless temporaries (e.g., r0=r1). Let's drop them
     processed = _compact_temporaries(processed)
