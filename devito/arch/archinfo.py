@@ -542,15 +542,6 @@ class Platform(object):
         assert self.simd_reg_size % np.dtype(dtype).itemsize == 0
         return int(self.simd_reg_size / np.dtype(dtype).itemsize)
 
-    @property
-    def memtotal(self):
-        """Physical memory size in bytes, or None if unknown."""
-        return None
-
-    def memavail(self, *args, **kwargs):
-        """Available physical memory in bytes, or None if unknown."""
-        return None
-
 
 class Cpu64(Platform):
 
@@ -584,13 +575,6 @@ class Cpu64(Platform):
                 # appears as 'avx512f, avx512cd, ...'
                 return i
         return 'cpp'
-
-    @cached_property
-    def memtotal(self):
-        return psutil.virtual_memory().total
-
-    def memavail(self, *args, **kwargs):
-        return psutil.virtual_memory().available
 
 
 class Intel64(Cpu64):
@@ -637,24 +621,6 @@ class Device(Platform):
     @cached_property
     def march(self):
         return None
-
-    @cached_property
-    def memtotal(self):
-        info = get_gpu_info()
-        try:
-            return info['mem.total']()
-        except (AttributeError, KeyError):
-            return None
-
-    def memavail(self, deviceid=0):
-        """
-        The amount of memory currently available on device.
-        """
-        info = get_gpu_info()
-        try:
-            return info['mem.free'](deviceid)
-        except (AttributeError, KeyError):
-            return None
 
 
 class IntelDevice(Device):
