@@ -298,10 +298,6 @@ class Dimension(ArgProvider):
             raise InvalidArgument("Illegal %s=%d < %s=%d"
                                   % (self.max_name, args[self.max_name],
                                      self.min_name, args[self.min_name]))
-        elif args[self.max_name] == args[self.min_name]-1:
-            debug("%s=%d and %s=%d might cause no iterations along Dimension %s",
-                  self.min_name, args[self.min_name],
-                  self.max_name, args[self.max_name], self.name)
 
     # Pickling support
     __reduce_ex__ = Pickable.__reduce_ex__
