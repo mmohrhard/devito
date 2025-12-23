@@ -1,18 +1,16 @@
 """User API to specify equations."""
 
 import sympy
-
 from cached_property import cached_property
 
 from devito.finite_differences import default_rules
 from devito.tools import as_tuple
 from devito.types.lazy import Evaluable
 
-__all__ = ['Eq', 'Inc', 'ReduceMax', 'ReduceMin']
+__all__ = ["Eq", "Inc", "ReduceMax", "ReduceMin"]
 
 
 class Eq(sympy.Eq, Evaluable):
-
     """
     An equal relation between two objects, the left-hand side and the
     right-hand side.
@@ -64,7 +62,13 @@ class Eq(sympy.Eq, Evaluable):
     is_Reduction = False
 
     __rargs__ = ("lhs", "rhs")
-    __rkwargs__ = ("subdomain", "coefficients", "implicit_dims", "suppress_fusion_dims")
+    __rkwargs__ = (
+        "subdomain",
+        "coefficients",
+        "implicit_dims",
+        "suppress_fusion_dims",
+        "cluster_fusion_key",
+    )
 
     def __new__(
         cls,
@@ -74,6 +78,7 @@ class Eq(sympy.Eq, Evaluable):
         coefficients=None,
         implicit_dims=None,
         suppress_fusion_dims=None,
+        cluster_fusion_key=None,
         **kwargs,
     ):
         kwargs["evaluate"] = False
@@ -82,6 +87,7 @@ class Eq(sympy.Eq, Evaluable):
         obj._substitutions = coefficients
         obj._implicit_dims = as_tuple(implicit_dims)
         obj._suppress_fusion_dims = suppress_fusion_dims or list()
+        obj._cluster_fusion_key = cluster_fusion_key
 
         return obj
 
@@ -103,6 +109,7 @@ class Eq(sympy.Eq, Evaluable):
             coefficients=self.substitutions,
             implicit_dims=self._implicit_dims,
             suppress_fusion_dims=self._suppress_fusion_dims,
+            cluster_fusion_key=self._cluster_fusion_key,
         )
 
         if eq._uses_symbolic_coefficients:
@@ -135,6 +142,7 @@ class Eq(sympy.Eq, Evaluable):
                     coefficients=self.substitutions,
                     implicit_dims=self._implicit_dims,
                     suppress_fusion_dims=self._suppress_fusion_dims,
+                    cluster_fusion_key=self._cluster_fusion_key,
                 )
                 for l in lhss
             ]
@@ -181,6 +189,10 @@ class Eq(sympy.Eq, Evaluable):
     def suppress_fusion_dims(self):
         return self._suppress_fusion_dims
 
+    @property
+    def cluster_fusion_key(self):
+        return self._cluster_fusion_key
+
     func = Evaluable._rebuild
 
     def xreplace(self, rules):
@@ -192,13 +204,21 @@ class Eq(sympy.Eq, Evaluable):
         )
 
     def __str__(self):
-        return "%s(%s, %s)" % (self.__class__.__name__, self.lhs, self.rhs)
+        return "%s(%s, %s%s)" % (
+            self.__class__.__name__,
+            self.lhs,
+            self.rhs,
+            (
+                f", fusion_key={self.cluster_fusion_key}"
+                if self.cluster_fusion_key is not None
+                else ""
+            ),
+        )
 
     __repr__ = __str__
 
 
 class Reduction(Eq):
-
     """
     An Eq in which the right-hand side represents a reduction operation, whose
     result is stored in to the left-hand side.
@@ -213,7 +233,6 @@ class Reduction(Eq):
 
 
 class Inc(Reduction):
-
     """
     An increment Reduction.
 

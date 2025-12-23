@@ -29,7 +29,7 @@ from devito.tools import (
 from devito.types import Array, Eq, Inc, Symbol
 from devito.types.dimension import BOTTOM, ModuloDimension
 
-__all__ = ['clusterize']
+__all__ = ["clusterize"]
 
 
 def clusterize(exprs, **kwargs):
@@ -58,7 +58,6 @@ def clusterize(exprs, **kwargs):
 
 
 class Schedule(QueueStateful):
-
     """
     This special Queue produces a new sequence of "scheduled" Clusters, which
     means that:
@@ -100,8 +99,9 @@ class Schedule(QueueStateful):
           Dimension in both Clusters.
     """
 
-    @timed_pass(name='schedule')
+    @timed_pass(name="schedule")
     def process(self, clusters):
+        self.cluster_stamps = dict()
         return self._process_fatd(clusters, 1)
 
     def callback(self, clusters, prefix, backlog=None, known_break=None):
@@ -135,26 +135,39 @@ class Schedule(QueueStateful):
         # Schedule Clusters over different IterationSpaces if this increases parallelism
         for i in range(1, len(clusters)):
             if self._break_for_parallelism(scope, candidates, i):
-                return self.callback(clusters[:i], prefix, clusters[i:] + backlog,
-                                     candidates | known_break)
+                return self.callback(
+                    clusters[:i],
+                    prefix,
+                    clusters[i:] + backlog,
+                    candidates | known_break,
+                )
 
         # Compute iteration direction
         idir = {d: Backward for d in candidates if d.root in scope.d_anti.cause}
         if maybe_break:
-            idir.update({d: Forward for d in candidates if d.root in scope.d_flow.cause})
+            idir.update(
+                {d: Forward for d in candidates if d.root in scope.d_flow.cause}
+            )
         idir.update({d: Forward for d in candidates if d not in idir})
 
         # Enforce iteration direction on each Cluster
         processed = []
+
         for c in clusters:
             stamp = Stamp()
+
+            if c.fusion_key is not None:
+                stamp = self.cluster_stamps.setdefault(c.fusion_key, Stamp())
 
             # Identify dimensions that should not be fused
             no_fuse_dims = {k for k, v in c.properties.items() if SUPPRESS_FUSION in v}
 
             # Collect dimensions that need to be lifted
-            lift_dims = {d.dim for d in prefix
-                        if any(dd in no_fuse_dims for dd in d.dim._defines)}
+            lift_dims = {
+                d.dim
+                for d in prefix
+                if any(dd in no_fuse_dims for dd in d.dim._defines)
+            }
 
             # Create new iteration space, lifting dimensions if necessary
             intervals = c.ispace.intervals
@@ -164,7 +177,7 @@ class Schedule(QueueStateful):
             ispace = IterationSpace(
                 intervals,
                 c.ispace.sub_iterators,
-                {**c.ispace.directions, **idir}
+                {**c.ispace.directions, **idir},
             )
 
             processed.append(c.rebuild(ispace=ispace))
@@ -177,9 +190,11 @@ class Schedule(QueueStateful):
         idir = {d: Any for d in known_break}
         stamp = Stamp()
         for i, c in enumerate(list(backlog)):
-            ispace = IterationSpace(c.ispace.intervals.lift(known_break, stamp),
-                                    c.ispace.sub_iterators,
-                                    {**c.ispace.directions, **idir})
+            ispace = IterationSpace(
+                c.ispace.intervals.lift(known_break, stamp),
+                c.ispace.sub_iterators,
+                {**c.ispace.directions, **idir},
+            )
             backlog[i] = c.rebuild(ispace=ispace)
 
         return processed + self.callback(backlog, prefix)
@@ -193,7 +208,9 @@ class Schedule(QueueStateful):
                 # Would break a dependence on storage
                 return False
             if any(d.is_carried(i) for i in candidates):
-                if (d.is_flow and d.is_lex_negative) or (d.is_anti and d.is_lex_positive):
+                if (d.is_flow and d.is_lex_negative) or (
+                    d.is_anti and d.is_lex_positive
+                ):
                     # Would break a data dependence
                     return False
             test = test or (bool(d.cause & candidates) and not d.is_lex_equal)
@@ -254,7 +271,6 @@ def guard(clusters):
 
 
 class Stepper(Queue):
-
     """
     Produce a new sequence of Clusters in which the IterationSpaces carry the
     sub-iterators induced by a SteppingDimension.
@@ -293,8 +309,10 @@ class Stepper(Queue):
                 elif len(sis) == 1:
                     si = sis.pop()
                 else:
-                    raise InvalidOperator("Cannot use multiple SteppingDimensions "
-                                          "to index into a Function")
+                    raise InvalidOperator(
+                        "Cannot use multiple SteppingDimensions "
+                        "to index into a Function"
+                    )
                 size = i.function.shape_allocated[d]
                 assert is_integer(size)
 
@@ -311,7 +329,7 @@ class Stepper(Queue):
                 siafs = sorted(iafs, key=lambda i: -np.inf if i - si == 0 else (i - si))
 
                 for iaf in siafs:
-                    name = '%s%d' % (si.name, len(mds))
+                    name = "%s%d" % (si.name, len(mds))
                     offset = uxreplace(iaf, {si: d.root})
                     mds.append(ModuloDimension(name, si, offset, size, origin=iaf))
 
@@ -342,10 +360,12 @@ class Stepper(Queue):
 
             # Augment IterationSpace
             sub_iterators = dict(c.ispace.sub_iterators)
-            sub_iterators[d] = tuple(i for i in sub_iterators[d] + tuple(mds)
-                                     if i not in subiters)
-            ispace = IterationSpace(c.ispace.intervals, sub_iterators,
-                                    c.ispace.directions)
+            sub_iterators[d] = tuple(
+                i for i in sub_iterators[d] + tuple(mds) if i not in subiters
+            )
+            ispace = IterationSpace(
+                c.ispace.intervals, sub_iterators, c.ispace.directions
+            )
 
             processed.append(c.rebuild(exprs=exprs, ispace=ispace))
 
@@ -353,8 +373,8 @@ class Stepper(Queue):
 
 
 def normalize(clusters, **kwargs):
-    options = kwargs['options']
-    sregistry = kwargs['sregistry']
+    options = kwargs["options"]
+    sregistry = kwargs["sregistry"]
 
     clusters = normalize_nested_indexeds(clusters, sregistry)
     clusters = normalize_reductions(clusters, sregistry, options)
@@ -362,7 +382,7 @@ def normalize(clusters, **kwargs):
     return clusters
 
 
-@cluster_pass(mode='all')
+@cluster_pass(mode="all")
 def normalize_nested_indexeds(cluster, sregistry):
     """
     Recursively extract nested Indexeds in to temporaries.
@@ -399,12 +419,12 @@ def normalize_nested_indexeds(cluster, sregistry):
     return cluster.rebuild(processed)
 
 
-@cluster_pass(mode='all')
+@cluster_pass(mode="all")
 def normalize_reductions(cluster, sregistry, options):
     """
     Extract the right-hand sides of reduction Eq's in to temporaries.
     """
-    opt_mapify_reduce = options['mapify-reduce']
+    opt_mapify_reduce = options["mapify-reduce"]
 
     dims = [d for d, v in cluster.properties.items() if PARALLEL_IF_ATOMIC in v]
 
@@ -423,8 +443,7 @@ def normalize_reductions(cluster, sregistry, options):
             # `u[t, i] += s`
             name = sregistry.make_name()
             v = Symbol(name=name, dtype=e.dtype)
-            processed.extend([e.func(v, e.rhs, operation=None),
-                              e.func(e.lhs, v)])
+            processed.extend([e.func(v, e.rhs, operation=None), e.func(e.lhs, v)])
 
         elif e.is_Reduction and e.lhs.is_Symbol and opt_mapify_reduce:
             # Transform `e` into what is in essence an explicit map-reduce
@@ -437,8 +456,7 @@ def normalize_reductions(cluster, sregistry, options):
             # of the target backend
             name = sregistry.make_name()
             a = Array(name=name, dtype=e.dtype, dimensions=dims)
-            processed.extend([Eq(a.indexify(), e.rhs),
-                              Inc(e.lhs, a.indexify())])
+            processed.extend([Eq(a.indexify(), e.rhs), Inc(e.lhs, a.indexify())])
 
         else:
             processed.append(e)

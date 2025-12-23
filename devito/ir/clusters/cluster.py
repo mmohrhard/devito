@@ -4,10 +4,22 @@ import numpy as np
 from cached_property import cached_property
 
 from devito.ir.equations import ClusterizedEq
-from devito.ir.support import (PARALLEL, PARALLEL_IF_PVT, SUPPRESS_FUSION, BaseGuardBoundNext,
-                               Forward, Interval, IntervalGroup, IterationSpace, DataSpace, Scope,
-                               detect_accesses, detect_io, normalize_properties,
-                               normalize_syncs)
+from devito.ir.support import (
+    PARALLEL,
+    PARALLEL_IF_PVT,
+    SUPPRESS_FUSION,
+    BaseGuardBoundNext,
+    Forward,
+    Interval,
+    IntervalGroup,
+    IterationSpace,
+    DataSpace,
+    Scope,
+    detect_accesses,
+    detect_io,
+    normalize_properties,
+    normalize_syncs,
+)
 from devito.symbolics import estimate_cost
 from devito.tools import as_tuple, flatten, frozendict
 
@@ -63,7 +75,7 @@ class Cluster(object):
         self._properties = frozendict(properties)
 
     def __repr__(self):
-        return "Cluster([%s])" % ('\n' + ' '*9).join('%s' % i for i in self.exprs)
+        return "Cluster([%s])" % ("\n" + " " * 9).join("%s" % i for i in self.exprs)
 
     @classmethod
     def from_clusters(cls, *clusters):
@@ -74,12 +86,20 @@ class Cluster(object):
         assert len(clusters) > 0
         root = clusters[0]
         if not all(root.ispace.is_compatible(c.ispace) for c in clusters):
-            raise ValueError("Cannot build a Cluster from Clusters with "
-                             "incompatible IterationSpace")
+            raise ValueError(
+                "Cannot build a Cluster from Clusters with "
+                "incompatible IterationSpace"
+            )
         if not all(root.guards == c.guards for c in clusters):
-            raise ValueError("Cannot build a Cluster from Clusters with "
-                             "non-homogeneous guards")
+            raise ValueError(
+                "Cannot build a Cluster from Clusters with " "non-homogeneous guards"
+            )
 
+        if not all(root.fusion_key == c.fusion_key for c in clusters):
+            raise ValueError(
+                "Cannot build a Cluster from Clusters with "
+                "non-homogeneous fusion keys"
+            )
         exprs = chain(*[c.exprs for c in clusters])
         ispace = IterationSpace.union(*[c.ispace for c in clusters])
 
@@ -93,8 +113,10 @@ class Cluster(object):
         try:
             syncs = normalize_syncs(*[c.syncs for c in clusters])
         except ValueError:
-            raise ValueError("Cannot build a Cluster from Clusters with "
-                             "non-compatible synchronization operations")
+            raise ValueError(
+                "Cannot build a Cluster from Clusters with "
+                "non-compatible synchronization operations"
+            )
 
         return Cluster(exprs, ispace, guards, properties, syncs)
 
@@ -106,16 +128,20 @@ class Cluster(object):
         # Shortcut for backwards compatibility
         if args:
             if len(args) != 1:
-                raise ValueError("rebuild takes at most one positional argument (exprs)")
-            if kwargs.get('exprs'):
+                raise ValueError(
+                    "rebuild takes at most one positional argument (exprs)"
+                )
+            if kwargs.get("exprs"):
                 raise ValueError("`exprs` provided both as arg and kwarg")
-            kwargs['exprs'] = args[0]
+            kwargs["exprs"] = args[0]
 
-        return Cluster(exprs=kwargs.get('exprs', self.exprs),
-                       ispace=kwargs.get('ispace', self.ispace),
-                       guards=kwargs.get('guards', self.guards),
-                       properties=kwargs.get('properties', self.properties),
-                       syncs=kwargs.get('syncs', self.syncs))
+        return Cluster(
+            exprs=kwargs.get("exprs", self.exprs),
+            ispace=kwargs.get("ispace", self.ispace),
+            guards=kwargs.get("guards", self.guards),
+            properties=kwargs.get("properties", self.properties),
+            syncs=kwargs.get("syncs", self.syncs),
+        )
 
     @property
     def exprs(self):
@@ -148,6 +174,16 @@ class Cluster(object):
     @property
     def syncs(self):
         return self._syncs
+
+    @property
+    def fusion_key(self):
+        key = None
+        for e in self.exprs:
+            if key is None:
+                key = e.cluster_fusion_key
+            elif key != e.cluster_fusion_key:
+                assert False, "Inconsistent fusion keys within the Cluster"
+        return key
 
     @cached_property
     def free_symbols(self):
@@ -207,17 +243,20 @@ class Cluster(object):
             pset = {PARALLEL, PARALLEL_IF_PVT}
             grid = self.grid
             for d in grid.dimensions:
-                if not any(pset & v for k, v in self.properties.items()
-                           if d in k._defines):
+                if not any(
+                    pset & v for k, v in self.properties.items() if d in k._defines
+                ):
                     raise ValueError
             return True
         except ValueError:
             pass
 
         # Fallback to legacy is_dense checks
-        return (not any(e.conditionals for e in self.exprs) and
-                not any(f.is_SparseFunction for f in self.functions) and
-                all(a.is_regular for a in self.scope.accesses))
+        return (
+            not any(e.conditionals for e in self.exprs)
+            and not any(f.is_SparseFunction for f in self.functions)
+            and all(a.is_regular for a in self.scope.accesses)
+        )
 
     @property
     def is_sparse(self):
@@ -311,8 +350,10 @@ class Cluster(object):
                 else:
                     d = i.dim
                 try:
-                    if i.lower < 0 or \
-                       i.upper > f._size_nodomain[d].left + f._size_halo[d].right:
+                    if (
+                        i.lower < 0
+                        or i.upper > f._size_nodomain[d].left + f._size_halo[d].right
+                    ):
                         # It'd mean trying to access a point before the
                         # left halo (test0) or after the right halo (test1)
                         oobs.update(d._defines)
@@ -323,7 +364,7 @@ class Cluster(object):
 
         # Construct the `intervals` of the DataSpace, that is a global,
         # Dimension-centric view of the data space
-        intervals = IntervalGroup.generate('union', *parts.values())
+        intervals = IntervalGroup.generate("union", *parts.values())
         # E.g., `db0 -> time`, but `xi NOT-> x`
         intervals = intervals.promote(lambda d: not d.is_Sub)
         intervals = intervals.zero(set(intervals.dimensions) - oobs)
@@ -346,7 +387,7 @@ class Cluster(object):
         If a Function is both read and written, then it is counted twice.
         """
         reads, writes = detect_io(self.exprs, relax=True)
-        accesses = [(i, 'r') for i in reads] + [(i, 'w') for i in writes]
+        accesses = [(i, "r") for i in reads] + [(i, "w") for i in writes]
         ret = {}
         for i, mode in accesses:
             if not i.is_AbstractFunction:
@@ -356,7 +397,7 @@ class Cluster(object):
                 intervals = self.dspace.parts[i]
                 # Assume that invariant dimensions always cause new loads/stores
                 invariants = self.ispace.intervals.drop(intervals.dimensions)
-                intervals = intervals.generate('union', invariants, intervals)
+                intervals = intervals.generate("union", invariants, intervals)
                 ret[(i, mode)] = intervals
             else:
                 ret[(i, mode)] = self.ispace.intervals

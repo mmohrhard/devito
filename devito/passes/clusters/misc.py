@@ -2,17 +2,24 @@ from collections import Counter, defaultdict
 from itertools import groupby, product
 
 from devito.ir.clusters import Cluster, ClusterGroup, Queue, cluster_pass
-from devito.ir.support import (SEQUENTIAL, SEPARABLE, Scope, ReleaseLock,
-                               WaitLock, WithLock, FetchUpdate, PrefetchUpdate)
+from devito.ir.support import (
+    SEPARABLE,
+    SEQUENTIAL,
+    FetchUpdate,
+    PrefetchUpdate,
+    ReleaseLock,
+    Scope,
+    WaitLock,
+    WithLock,
+)
 from devito.symbolics import pow_to_mul
 from devito.tools import DAG, Stamp, as_tuple, flatten, frozendict, timed_pass
 from devito.types import Hyperplane
 
-__all__ = ['Lift', 'fuse', 'optimize_pows', 'fission', 'optimize_hyperplanes']
+__all__ = ["Lift", "fuse", "optimize_pows", "fission", "optimize_hyperplanes"]
 
 
 class Lift(Queue):
-
     """
     Remove invariant Dimensions from Clusters to avoid redundant computation.
 
@@ -22,7 +29,7 @@ class Lift(Queue):
     "loop-invariant code motion".
     """
 
-    @timed_pass(name='lift')
+    @timed_pass(name="lift")
     def process(self, elements):
         return super(Lift, self).process(elements)
 
@@ -47,7 +54,7 @@ class Lift(Queue):
                 processed.append(c)
                 continue
 
-            impacted = set(processed) | set(clusters[n+1:])
+            impacted = set(processed) | set(clusters[n + 1 :])
 
             # None of the Functions appearing in a lifted Cluster can be written to
             if any(c.functions & set(i.scope.writes) for i in impacted):
@@ -82,7 +89,6 @@ class Lift(Queue):
 
 
 class Fusion(Queue):
-
     """
     Fuse Clusters with compatible IterationSpace.
     """
@@ -91,14 +97,16 @@ class Fusion(Queue):
         options = options or {}
 
         self.toposort = toposort
-        self.fusetasks = options.get('fuse-tasks', False)
+        self.fusetasks = options.get("fuse-tasks", False)
 
         super().__init__()
 
     def _make_key_hook(self, cgroup, level):
         assert level > 0
         assert len(cgroup.guards) == 1
-        return (tuple(cgroup.guards[0].get(i.dim) for i in cgroup.itintervals[:level-1]),)
+        return (
+            tuple(cgroup.guards[0].get(i.dim) for i in cgroup.itintervals[: level - 1]),
+        )
 
     def process(self, clusters):
         cgroups = [ClusterGroup(c, c.itintervals) for c in clusters]
@@ -124,8 +132,11 @@ class Fusion(Queue):
                 try:
                     non_fusible = []
                     fusible = []
+                    fusion_key = maybe_fusible[0].fusion_key
                     for c in maybe_fusible:
-                        if any(e.suppress_fusion_dims for e in c.exprs):
+                        if (
+                            c.fusion_key != fusion_key and c.fusion_key is not None
+                        ) or any(e.suppress_fusion_dims for e in c.exprs):
                             non_fusible.append(c)
                         else:
                             fusible.append(c)
@@ -150,6 +161,10 @@ class Fusion(Queue):
         # WithLocks, but not with any other SyncOps
         if isinstance(c, Cluster):
             syncs = (c.syncs,)
+            if c.fusion_key is not None:
+                key += (c.fusion_key,)
+            else:
+                key += (-1,)
         else:
             syncs = c.syncs
         for i in syncs:
@@ -158,8 +173,9 @@ class Fusion(Queue):
                 for s in v:
                     if isinstance(s, (FetchUpdate, PrefetchUpdate)):
                         continue
-                    elif (isinstance(s, (WaitLock, ReleaseLock)) or
-                          (self.fusetasks and isinstance(s, WithLock))):
+                    elif isinstance(s, (WaitLock, ReleaseLock)) or (
+                        self.fusetasks and isinstance(s, WithLock)
+                    ):
                         mapper[k].add(type(s))
                     else:
                         mapper[k].add(s)
@@ -213,7 +229,7 @@ class Fusion(Queue):
 
         dag = DAG(nodes=cgroups)
         for n, cg0 in enumerate(cgroups):
-            for cg1 in cgroups[n+1:]:
+            for cg1 in cgroups[n + 1 :]:
                 # A Scope to compute all cross-ClusterGroup anti-dependences
                 rule = lambda i: i.is_cross
                 scope = Scope(exprs=cg0.exprs + cg1.exprs, rules=rule)
@@ -229,9 +245,9 @@ class Fusion(Queue):
                 # * All ClusterGroups between `cg0` and `cg1` must precede `cg1`
                 # * All ClusterGroups after `cg1` cannot precede `cg1`
                 elif any(i.cause & prefix for i in scope.d_anti_gen()):
-                    for cg2 in cgroups[n:cgroups.index(cg1)]:
+                    for cg2 in cgroups[n : cgroups.index(cg1)]:
                         dag.add_edge(cg2, cg1)
-                    for cg2 in cgroups[cgroups.index(cg1)+1:]:
+                    for cg2 in cgroups[cgroups.index(cg1) + 1 :]:
                         dag.add_edge(cg1, cg2)
                     break
 
@@ -242,8 +258,9 @@ class Fusion(Queue):
                 # a work around to the fact that any two Clusters characterized
                 # by anti-dependence should have been given a different stamp,
                 # and same for guarded Clusters, but that is not the case (yet)
-                elif any(scope.d_anti_gen()) or\
-                        any(i.is_iaw for i in scope.d_output_gen()):
+                elif any(scope.d_anti_gen()) or any(
+                    i.is_iaw for i in scope.d_output_gen()
+                ):
                     dag.add_edge(cg0, cg1)
                     index = cgroups.index(cg1) - 1
                     if index > n and self._key(cg0) == self._key(cg1):
@@ -252,7 +269,9 @@ class Fusion(Queue):
 
                 # Any flow-dependences along an inner Dimension (i.e., a Dimension
                 # that doesn't appear in `prefix`) impose that `cg1` follows `cg0`
-                elif any(not (i.cause and i.cause & prefix) for i in scope.d_flow_gen()):
+                elif any(
+                    not (i.cause and i.cause & prefix) for i in scope.d_flow_gen()
+                ):
                     dag.add_edge(cg0, cg1)
 
                 # Clearly, output dependences must be honored
@@ -273,7 +292,7 @@ def fuse(clusters, toposort=False, options=None):
     return Fusion(toposort, options).process(clusters)
 
 
-@cluster_pass(mode='all')
+@cluster_pass(mode="all")
 def optimize_pows(cluster, *args):
     """
     Convert integer powers into Muls, such as ``a**2 => a*a``.
@@ -282,7 +301,6 @@ def optimize_pows(cluster, *args):
 
 
 class Fission(Queue):
-
     """
     Implement Clusters fission. For more info refer to fission.__doc__.
     """
@@ -320,6 +338,7 @@ class Fission(Queue):
                 processed.extend(group)
             else:
                 stamp = Stamp()
+
                 for c in group:
                     ispace = c.ispace.lift(d, stamp)
                     processed.append(c.rebuild(ispace=ispace))
