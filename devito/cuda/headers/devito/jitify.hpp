@@ -3582,7 +3582,7 @@ class JitCache {
    *  \param cache_size The number of kernels to hold in the cache
    *    before overwriting the least-recently-used ones.
    */
-  enum { DEFAULT_CACHE_SIZE = 128 };
+  enum { DEFAULT_CACHE_SIZE = 1024 };
   JitCache(size_t cache_size = DEFAULT_CACHE_SIZE)
       : _impl(new JitCache_impl(cache_size)) {}
 
