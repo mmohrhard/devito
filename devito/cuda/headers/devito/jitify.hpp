@@ -1402,10 +1402,6 @@ class CUDAKernel {
     return knl;
   }
 
-  inline operator CUfunction() const {
-    return get_function();
-  }
-
   inline CUresult launch(dim3 grid, dim3 block, unsigned int smem,
                          CUstream stream, std::vector<void*> arg_ptrs) const {
     return cuLaunchKernel(get_function(), grid.x, grid.y, grid.z, block.x,
@@ -3140,7 +3136,7 @@ class JitCache_impl {
   friend class KernelInstantiation_impl;
   friend class KernelLauncher_impl;
   typedef uint64_t key_type;
-  jitify::ObjectCache<key_type, detail::CUDAKernel> _kernel_cache;
+  jitify::ObjectCache<key_type, std::shared_ptr<detail::CUDAKernel>> _kernel_cache;
   jitify::ObjectCache<key_type, ProgramConfig> _program_config_cache;
   std::vector<std::string> _options;
 #if JITIFY_THREAD_SAFE
@@ -3212,7 +3208,7 @@ class KernelInstantiation_impl {
   uint64_t _hash;
   std::string _template_inst;
   std::vector<std::string> _options;
-  detail::CUDAKernel* _cuda_kernel;
+  std::shared_ptr<detail::CUDAKernel> _cuda_kernel;
   inline void print() const;
   void build_kernel();
 
@@ -3222,6 +3218,8 @@ class KernelInstantiation_impl {
   inline KernelInstantiation_impl(KernelInstantiation_impl const&) = default;
   inline KernelInstantiation_impl(KernelInstantiation_impl&&) = default;
   detail::CUDAKernel const& cuda_kernel() const { return *_cuda_kernel; }
+  std::shared_ptr<detail::CUDAKernel> cuda_kernel_ptr() const { return _cuda_kernel; }
+  uint64_t hash() const { return _hash; }
 };
 
 class KernelLauncher_impl {
@@ -3334,12 +3332,29 @@ class KernelInstantiation {
   inline KernelInstantiation(Kernel const& kernel,
                              std::vector<std::string> const& template_args);
 
-  /*! Implicit conversion to the underlying CUfunction object.
+  /*! Get the underlying CUfunction object.
    *
    * \note This allows use of CUDA APIs like
    *   cuOccupancyMaxActiveBlocksPerMultiprocessor.
+   * \warning The returned CUfunction is only valid as long as this
+   *   KernelInstantiation (or a copy of it) exists. Callers must ensure
+   *   they hold a reference to the KernelInstantiation for the duration
+   *   of using the CUfunction.
    */
-  inline operator CUfunction() const { return _impl->cuda_kernel(); }
+  inline CUfunction get_function() const { return _impl->cuda_kernel().get_function(); }
+
+  /*! Get the kernel hash for this instantiation.
+   */
+  inline uint64_t hash() const { return _impl->hash(); }
+
+  /*! Get the shared_ptr to the underlying CUDAKernel.
+   *
+   * \note Holding this shared_ptr ensures the kernel remains valid
+   *   even if evicted from the cache.
+   */
+  inline std::shared_ptr<detail::CUDAKernel> cuda_kernel_ptr() const {
+    return _impl->cuda_kernel_ptr();
+  }
 
   /*! Configure the kernel launch.
    *
@@ -3377,7 +3392,7 @@ class KernelInstantiation {
       unsigned int flags = 0) const {
     int grid;
     int block;
-    CUfunction func = _impl->cuda_kernel();
+    CUfunction func = _impl->cuda_kernel().get_function();
     detail::get_1d_max_occupancy(func, smem_callback, &smem, max_block_size,
                                  flags, &grid, &block);
     return this->configure(grid, block, smem, stream);
@@ -3715,13 +3730,15 @@ inline KernelInstantiation_impl::KernelInstantiation_impl(
     std::cout << "Found ";
     this->print();
 #endif
-    _cuda_kernel = &cache._kernel_cache.get(cache_key);
+    _cuda_kernel = cache._kernel_cache.get(cache_key);
   } else {
 #if JITIFY_PRINT_INSTANTIATION
     std::cout << "Building ";
     this->print();
 #endif
-    _cuda_kernel = &cache._kernel_cache.emplace(cache_key);
+    auto new_kernel = std::make_shared<detail::CUDAKernel>();
+    cache._kernel_cache.insert(cache_key, new_kernel);
+    _cuda_kernel = new_kernel;
     this->build_kernel();
   }
 }
@@ -4350,12 +4367,14 @@ class KernelInstantiation {
                                               linker_paths));
   }
 
-  /*! Implicit conversion to the underlying CUfunction object.
+  /*! Get the underlying CUfunction object.
    *
    * \note This allows use of CUDA APIs like
    *   cuOccupancyMaxActiveBlocksPerMultiprocessor.
+   * \warning The returned CUfunction is only valid as long as this
+   *   KernelInstantiation exists.
    */
-  operator CUfunction() const { return *_cuda_kernel; }
+  CUfunction get_function() const { return _cuda_kernel->get_function(); }
 
   /*! Restore a serialized kernel instantiation.
    *
@@ -4607,7 +4626,7 @@ inline KernelLauncher KernelInstantiation::configure_1d_max_occupancy(
     cudaStream_t stream, unsigned int flags) const {
   int grid;
   int block;
-  CUfunction func = *_cuda_kernel;
+  CUfunction func = _cuda_kernel->get_function();
   detail::get_1d_max_occupancy(func, smem_callback, &smem, max_block_size,
                                flags, &grid, &block);
   return this->configure(grid, block, smem, stream);

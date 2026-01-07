@@ -456,7 +456,7 @@ int _destroyDataObject(T *obj, const char *name, bool del = true,
 }
 
 using tuned_kernel = std::pair<dim3, dim3>;
-typedef std::map<CUfunction, tuned_kernel> tuningDict;
+typedef std::map<std::shared_ptr<jitify::detail::CUDAKernel>, tuned_kernel> tuningDict;
 
 static inline int dim3_get(const dim3 &d, int rank) {
   if (rank == 0)
@@ -545,10 +545,13 @@ _check_kernel(const dim3 &block, const dim3 &sub_block,
               bool &is_valid, float &est_occupancy, int &max_block, int &regs,
               float &occupancy) {
   // verify that it works by checking occupancy with the new block size
+  // Keep kernel_inst alive to ensure the CUfunction remains valid
+  jitify::KernelInstantiation kernel_inst;
   CUfunction k = NULL;
   {
     std::lock_guard<std::mutex> lock(kernel_compile_mutex);
-    k = builder(block, sub_block);
+    kernel_inst = builder(block, sub_block);
+    k = kernel_inst.get_function();
     cuFuncSetCacheConfig(k, CU_FUNC_CACHE_PREFER_L1);
   }
   int grid = 0;
@@ -559,12 +562,10 @@ _check_kernel(const dim3 &block, const dim3 &sub_block,
 
   debug("trying with block size (%d, %d, %d)..", block.x, block.y, block.z);
 
-  CUresult res = cuOccupancyMaxPotentialBlockSize(&grid, &max_block,
-                                                  (CUfunction)k, nullptr, 0, 0);
+  CUresult res = cuOccupancyMaxPotentialBlockSize(&grid, &max_block, k, nullptr, 0, 0);
   if (res == 0) {
 
-    if (cuFuncGetAttribute(&regs, CU_FUNC_ATTRIBUTE_NUM_REGS, (CUfunction)k) !=
-        0)
+    if (cuFuncGetAttribute(&regs, CU_FUNC_ATTRIBUTE_NUM_REGS, k) != 0)
       return false;
 
     occupancy = _occupancyForKernel(k, block);
@@ -614,6 +615,10 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   int device = 0;
   int max_sm_resident_blocks = 0;
   int sm_count = 0;
+
+  // Keep kernel_inst alive to ensure CUfunction remains valid throughout tuning
+  jitify::KernelInstantiation kernel_inst;
+  std::shared_ptr<jitify::detail::CUDAKernel> kernel_ptr;
   CUfunction cf = NULL;
 
   cudaGetDevice(&device);
@@ -623,13 +628,14 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   {
     std::lock_guard<std::mutex> lock(kernel_compile_mutex);
 
-    auto tmp_kernel = builder(preferred, preferred_sub);
+    kernel_inst = builder(preferred, preferred_sub);
+    kernel_ptr = kernel_inst.cuda_kernel_ptr();
 
     // Calculate the maximum possible occupancy for the preferred block size
-    cf = (CUfunction)tmp_kernel;
-    if (tuning.find(cf) != tuning.end()) {
+    cf = kernel_inst.get_function();
+    if (tuning.find(kernel_ptr) != tuning.end()) {
       nvtxRangePop();
-      return tuning.at(cf);
+      return tuning.at(kernel_ptr);
     }
   }
 
@@ -695,9 +701,9 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   debug("base occupancy is %.2f", best_eff);
   if (best_eff > 0.66) {
     std::lock_guard<std::mutex> lock(kernel_compile_mutex);
-    tuning[cf] = result;
+    tuning[kernel_ptr] = result;
     nvtxRangePop();
-    return tuning[cf];
+    return tuning[kernel_ptr];
   }
 
   float next_eff = 0.f;
@@ -819,7 +825,7 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
         best_eff);
   {
     std::lock_guard<std::mutex> lock(kernel_compile_mutex);
-    tuning[cf] = result;
+    tuning[kernel_ptr] = result;
   }
   nvtxRangePop();
   return result;
