@@ -1045,7 +1045,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
             if self._device_data is not None:
                 self._device_data.free()
                 self._device_data = None
-            self._device_data = self._DeviceDataType(self.shape_alocated,
+            self._device_data = self._DeviceDataType(self.shape_allocated,
                                                      self.dtype,
                                                      allocator=self._device_allocator)
 
