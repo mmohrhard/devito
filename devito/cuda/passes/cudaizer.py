@@ -1,24 +1,28 @@
 from collections import OrderedDict
-from devito.passes.iet.parpragma import PragmaDeviceAwareTransformer
-from devito.ir.iet import (
-    FindNodes,
-    EntryFunction,
-    Transformer,
-    Iteration,
-    Expression,
-    Callable,
-)
-from devito.ir.iet.utils import filter_iterations, retrieve_iteration_tree
-from devito.ir.equations import OpInc
-from devito.tools import as_tuple, flatten
-
-from devito.cuda.nodes import CudaCall, KernelStream, CudaAtomicExpression, CudaCallable
-
-from devito.cuda.passes.realign import realign_iet
-from devito.cuda.lang import CudaBB
-from devito.cuda.visitors import IterationExtractor
 
 import cgen as c
+
+from devito.cuda.lang import CudaBB
+from devito.cuda.nodes import (
+    CudaAtomicExpression,
+    CudaCall,
+    CudaCallable,
+    KernelStream,
+)
+from devito.cuda.passes.realign import realign_iet
+from devito.cuda.visitors import IterationExtractor
+from devito.ir.equations import OpInc
+from devito.ir.iet import (
+    Callable,
+    EntryFunction,
+    Expression,
+    FindNodes,
+    Iteration,
+    Transformer,
+)
+from devito.ir.iet.utils import filter_iterations, retrieve_iteration_tree
+from devito.passes.iet.parpragma import PragmaDeviceAwareTransformer
+from devito.tools import as_tuple, flatten
 
 __all__ = ["DeviceCudaizer"]
 
@@ -48,13 +52,13 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             # list for an Iteration includes the original dimension and the
             # derived version
             kdims = [
-                next(filter(lambda x: x.is_Derived is False, c.dimensions)).symbolic_size
+                next(filter(lambda x: x.is_Derived is False, c.dimensions))
                 for c in extracted_iterators
             ][:3]
 
             # If we don't find any non-derived dimensions, use the derived ones I guess?
             if len(kdims) == 0:
-                kdims = [c.dimensions[0].symbolic_size for c in extracted_iterators][:3]
+                kdims = [c.dimensions[0] for c in extracted_iterators][:3]
 
             if len(kdims) == 0:
                 return root, None, None
@@ -63,7 +67,18 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             # memory alignment reasons;
             # filtering out unwanted points in the space on the GPU
             # is very approximately zero-cost
-            kgrid = kdims.copy()
+            #
+            # justinw 12/25: Oops, we found an edge case! MPI halo exchanges
+            # call into the overlapping kernel 26 times with small iteration spaces
+            # (6 faces + 8 corners + 12 edges), and for any reasonably sized grid
+            # we end up with substantial kernel launch overhead.
+            #
+            # We now pass the dimension symbolic minimums/maximums to the launch
+            # function, and it'll round those down to the nearest block size, and
+            # launch the smallest possible grid
+            kgrid = [d.symbolic_size for d in kdims].copy()
+            kmins = [d.symbolic_min for d in kdims].copy()
+            kmaxs = [d.symbolic_max for d in kdims].copy()
 
             # the grid/threads are (for now) set up in some C++ code from a header
             kthread = [1] * len(kdims)
@@ -71,6 +86,8 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             partree = CudaCall(
                 kernel_name,
                 kgrid,
+                kmins,
+                kmaxs,
                 kthread,
                 preferred_block=kernel.preferred_block,
                 preferred_sub_block=kernel.preferred_sub_block,
@@ -78,9 +95,6 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
                 kernel=kernel,
                 stream=KernelStream(),
             )
-            # Make sure that the enclosing function knows we need the full size
-            # of the Functions
-            partree.expr_symbols = as_tuple(flatten((partree.expr_symbols, kdims)))
 
             self.count = self.count + 1
 
@@ -155,7 +169,10 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
         )
 
         grouped_iters = [
-            (x, list(OrderedDict.fromkeys([i for i in iterations if i.dim == x])))
+            (
+                x,
+                list(OrderedDict.fromkeys([i for i in iterations if i.dim == x])),
+            )
             for x in possible_iter_dimensions
         ]
 
@@ -296,12 +313,13 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             kernel.append(
                 c.Initializer(
                     c.Value("int", dim.name + ("_0" if has_sub_block else "")),
-                    "blockIdx.%s * _block_%s %s+ %s"
+                    "blockIdx.%s * _block_%s %s+ %s + %s"
                     % (
                         dim_vars[dv],
                         dim_vars[dv],
                         (" * _sub_block_" + dim_vars[dv] + " " if has_sub_block else ""),
                         l_idx,
+                        "_offsets." + dim_vars[v],
                     ),
                 )
             )
@@ -365,8 +383,8 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             body=kernel,
             parameters=args,
             defines=[x[0] for x in valid_dims],
-            preferred_block=block,
-            preferred_sub_block=sub_blocks,
+            preferred_block=block[0 : len(valid_dims)],
+            preferred_sub_block=sub_blocks[0 : len(valid_dims)],
         )
 
         return (cuda_callable, list([x[1][0] for x in valid_dims]))

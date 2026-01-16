@@ -1,14 +1,21 @@
-import cgen as c
-from devito.ir.equations.equation import OpInc
+from typing import Iterator
 
-from devito.symbolics import ccode, CondAnd
-from devito.tools import as_tuple, filter_ordered, filter_sorted, flatten
-from devito.ir.iet.visitors import CGen, MultilineCall, blankline, LambdaCollection
-from devito.types.basic import AbstractFunction
-from devito.types import IndexedData
-from devito.ir.iet.nodes import Call, Lambda, AddressOf, List
+import cgen as c
+
 from devito.cuda.nodes import CudaCallable, CudaTransferDirection
 from devito.ir.equations import DummyEq
+from devito.ir.equations.equation import OpInc
+from devito.ir.iet.nodes import AddressOf, Call, Lambda, List
+from devito.ir.iet.visitors import (
+    CGen,
+    LambdaCollection,
+    MultilineCall,
+    blankline,
+)
+from devito.symbolics import CondAnd, ccode
+from devito.tools import as_tuple, filter_ordered, filter_sorted, flatten
+from devito.types import IndexedData
+from devito.types.basic import AbstractFunction
 
 __all__ = ["CudaCGen"]
 
@@ -23,9 +30,9 @@ class CudaCGen(CGen):
         ret = []
         for i in filter_ordered(args):
             if isinstance(i, (AbstractFunction, IndexedData)):
-                ret.append(c.Value("%s __restrict" % (i._C_typename,), i._C_name))
+                ret.append(c.Value("%s __restrict" % (i._C_arg_typename,), i._C_name))
             elif i.is_AbstractObject or i.is_Symbol:
-                ret.append(c.Value(i._C_typename, i._C_name))
+                ret.append(c.Value(i._C_arg_typename, i._C_name))
             elif i._C_typedata not in _cudaPointerTypes:
                 ret.append(c.Value("void", "*_%s" % i._C_name))
             else:
@@ -46,7 +53,10 @@ class CudaCGen(CGen):
                 ret.append(
                     c.Value(
                         "%s%s const __restrict"
-                        % ("const " if is_const else "", i.indexed._C_typename),
+                        % (
+                            "const " if is_const else "",
+                            i.indexed._C_arg_typename,
+                        ),
                         "_" + i._name,
                     )
                 )
@@ -54,12 +64,12 @@ class CudaCGen(CGen):
                 ret.append(
                     c.Value(
                         "%s%s const __restrict"
-                        % ("const " if is_const else "", i._C_typename),
+                        % ("const " if is_const else "", i._C_arg_typename),
                         "_" + i._name,
                     )
                 )
             elif i.is_AbstractObject or i.is_Symbol:
-                ret.append(c.Value(i._C_typename, i._C_name))
+                ret.append(c.Value(i._C_arg_typename, i._C_name))
             else:
                 ret.append(c.Value("const void", "*_%s" % i._C_name))
         return ret
@@ -75,7 +85,11 @@ class CudaCGen(CGen):
                     if hasattr(i, "_C_field_data"):
                         ret.append(
                             "(%s)%s->%s"
-                            % (i.indexed._C_typename, i._C_name, i._C_field_device_data)
+                            % (
+                                i.indexed._C_typename,
+                                i._C_name,
+                                i._C_field_device_data,
+                            )
                         )
                     else:
                         ret.append("(%s)%s" % (i.indexed._C_typename, i._C_name))
@@ -127,7 +141,10 @@ class CudaCGen(CGen):
         assert o.operation == OpInc
         code = c.Statement(
             "atomicAdd(&%s, %s)"
-            % (ccode(o.expr.lhs, dtype=o.dtype), ccode(o.expr.rhs, dtype=o.dtype))
+            % (
+                ccode(o.expr.lhs, dtype=o.dtype),
+                ccode(o.expr.rhs, dtype=o.dtype),
+            )
         )
         return code
 
@@ -245,6 +262,7 @@ class CudaCGen(CGen):
         body = flatten(self._visit(i) for i in o.children)
 
         decls = self._args_cuda_decl(o, o.parameters)
+        decls = [c.Value("dim3", "_offsets")] + decls
         prefix = template_clause(o)
 
         prefix = prefix + " ".join(o.prefix + (o.retval,))
@@ -252,11 +270,17 @@ class CudaCGen(CGen):
         return c.FunctionBody(signature, c.Block(body))
 
     def visit_CudaCall(self, o, nested_call=False):
-        arguments = self._args_cuda_call(o, o.arguments)
+        from devito.cuda.nodes import CudaStream
+
+        arguments = self._args_cuda_call(
+            o,
+            filter(lambda i: not isinstance(i, CudaStream), o.kernel_arguments),
+        )
 
         return MultilineCudaCall(
             o.name,
-            o.grid,
+            o.mins,
+            o.maxs,
             o.threads,
             o.preferred_block,
             o.preferred_sub_block,
@@ -295,7 +319,9 @@ class CudaCGen(CGen):
                             self._args_decl(i.root.parameters),
                         )
                     )
-                    efuncs.extend([self._visit(i.root), blankline])
+                    efuncs.extend(flatten([self._visit(i.root), blankline]))
+            # print("\n\n" + i.root.name + ":")
+            # print(str(i.root.body))
 
         # Definitions
         headers = [c.Define(*i) for i in o._headers] + [blankline]
@@ -346,7 +372,8 @@ class MultilineCudaCall(c.Generable):
     def __init__(
         self,
         name,
-        grid,
+        mins,
+        maxs,
         threads,
         preferred_block,
         preferred_sub_block,
@@ -355,7 +382,8 @@ class MultilineCudaCall(c.Generable):
         stream=None,
     ):
         self.name = name
-        self.grid = grid
+        self.mins = mins
+        self.maxs = maxs
         self.threads = threads
         self.template_arguments = as_tuple(template_arguments)
         self.arguments = as_tuple(arguments)
@@ -363,61 +391,24 @@ class MultilineCudaCall(c.Generable):
         self._preferred_block = preferred_block
         self._preferred_sub_block = preferred_sub_block
 
-    def generate(self):
-        grid = [1, 1, 1]
+    def generate(self, with_semicolon=True) -> Iterator[str]:
+        mins = [1, 1, 1]
+        maxs = [1, 1, 1]
         threads = [1, 1, 1]
-        for i in range(0, len(self.grid)):
-            expr = str(self.grid[-1 - i])
+        for i in range(0, len(self.mins)):
+            expr = str(self.maxs[-1 - i])
             if "/" in expr:
                 expr = "max(%s, 1)" % expr
-            grid[i] = expr
+            maxs[i] = expr
+
+            mins[i] = str(self.mins[-1 - i])
             threads[i] = self.threads[i]
-        grid_name = "grid"
-        thread_name = "threads"
-        tb_name = "tb"
-        tune_name = "%s_tune" % self.name
-        instantiated_name = "%s_tuned" % self.name
-        yield "{"
-        yield "\tdim3 %s = dim3(%s);" % (grid_name, ",".join(str(i) for i in grid))
-        yield "\tdim3 %s = std::get<0>(%s);" % (thread_name, tune_name)
-        yield "\tdim3 %s = dim3(%s.x * %s.y * %s.z);" % (
-            tb_name,
-            thread_name,
-            thread_name,
-            thread_name,
-        )
-
-        sub_name = thread_name + "_sub"
-        yield "\tdim3 %s = std::get<1>(%s);" % (sub_name, tune_name)
-        for suffix in ["x", "y", "z"]:
-            yield (
-                "\t%s.%s = (int)(ceil((float)%s.%s / (float)(%s.%s * %s.%s)));"
-                % (
-                    grid_name,
-                    suffix,
-                    grid_name,
-                    suffix,
-                    thread_name,
-                    suffix,
-                    sub_name,
-                    suffix,
-                )
-            )
-
-        yield "\tif (%s.x >= 1 && %s.y >= 1 && %s.z >= 1) {" % (
-            grid_name,
-            grid_name,
-            grid_name,
-        )
-        yield "\t\tCudaChecked((cudaError_t)(" + instantiated_name
-        yield "\t\t\t.configure(%s, %s, %s, %s)" % (
-            grid_name,
-            tb_name,
-            0,
+        tip = "launchKernel(%s, %s, dim3(%s), dim3(%s),  " % (
+            self.name,
             (self.stream if self.stream is not None else "cudaStreamDefault"),
+            ",".join(str(i) for i in mins),
+            ",".join(str(i) for i in maxs),
         )
-        tip = "\t\t\t.launch("
-
         processed = []
         for i in self.arguments:
             if isinstance(i, (MultilineCall, LambdaCollection)):
@@ -434,12 +425,10 @@ class MultilineCudaCall(c.Generable):
             else:
                 processed.append(str(i))
         tip = tip + ", ".join(processed)
-        tip += ")))"
-        tip += ";"
-
+        tip = tip + ")"
+        if with_semicolon:
+            tip = tip + ";"
         yield tip
-        yield "\t}"
-        yield "}"
 
 
 def template_clause(iet):
@@ -460,14 +449,6 @@ def template_clause(iet):
                 ]
             )
             + ">\n"
-            + "__launch_bounds__(%s)\n"
-            % (
-                " * ".join(
-                    p._C_name
-                    for p in template_parameters
-                    if not isinstance(p, DummyEq) and p._C_name.startswith("_block")
-                )
-            )
         )
 
     return clause

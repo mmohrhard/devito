@@ -124,6 +124,16 @@ class CodeSymbol(object):
         """
         return ctypes_to_cstr(self._C_ctype, qualifiers=self._C_typequals)
 
+    @property
+    def _C_arg_typename(self):
+        """
+        The type to use when this object is used in a function signature.
+
+        This may be different from `_C_typename` for certain types - eg.
+        C++ objects passed by reference.
+        """
+        return self._C_typename
+
     @abc.abstractproperty
     def _C_ctype(self):
         """

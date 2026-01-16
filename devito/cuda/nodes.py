@@ -1,32 +1,33 @@
+import ctypes as c
 from enum import Enum
+
 from cached_property import cached_property
 
+from devito.cuda.types import CudaStream
 from devito.data import FULL
-from devito.tools.utils import as_tuple, filter_ordered, flatten
-
+from devito.ir.equations import DummyEq
+from devito.ir.iet.efunc import AsyncCall, AsyncCallable
 from devito.ir.iet.nodes import (
     Call,
     CallableBody,
+    CLiteral,
+    Definition,
     DeviceCall,
     DeviceFunction,
     Expression,
     ExprStmt,
-    Node,
     Global,
-    Definition,
+    Node,
     Transfer,
-    CLiteral,
 )
-
-from devito.ir.iet.efunc import AsyncCall, AsyncCallable
 from devito.symbolics import ccode
+from devito.tools.utils import as_tuple, filter_ordered, flatten
 from devito.types import Scalar
-from devito.ir.equations import DummyEq
-from devito.cuda.types import CudaStream
-
-import ctypes as c
 
 __all__ = [
+    "CudaChecked",
+    "Checked",
+    "NcclChecked",
     "CudaCall",
     "CudaCallable",
     "CudaCallableBody",
@@ -47,28 +48,53 @@ class CudaCall(DeviceCall):
         self,
         name=None,
         grid=None,
+        mins=None,
+        maxs=None,
         threads=None,
         preferred_block=None,
         preferred_sub_block=None,
         template_arguments=None,
         arguments=None,
         kernel=None,
+        jit_instantiation=None,
+        tune=None,
         writes=None,
         types=None,
         stream=None,
     ):
-        super().__init__(name, arguments, None, writes=writes, types=types)
-        self._grid = grid
+        args = as_tuple(
+            flatten(
+                ([stream] if stream else [])
+                + list(arguments)
+                + ([jit_instantiation] if jit_instantiation else [])
+                + ([tune] if tune else [])
+            )
+        )
+        super().__init__(name, args, None, writes=writes, types=types)
+        self._grid = grid or []
+        self._mins = mins or []
+        self._maxs = maxs or []
         self._threads = threads
         self._stream = stream
         self._template_arguments = template_arguments
         self._kernel = kernel
+        self._jit_instantiation = jit_instantiation
+        self._tune = tune
         self._preferred_block = preferred_block
         self._preferred_sub_block = preferred_sub_block
+        self._kernel_arguments = arguments
 
     @property
     def grid(self):
         return self._grid
+
+    @property
+    def mins(self):
+        return self._mins
+
+    @property
+    def maxs(self):
+        return self._maxs
 
     @property
     def threads(self):
@@ -89,6 +115,28 @@ class CudaCall(DeviceCall):
     @property
     def template_arguments(self):
         return self._template_arguments
+
+    @property
+    def kernel_arguments(self):
+        return self._kernel_arguments
+
+    @cached_property
+    def expr_symbols(self):
+        retval = list()
+        if self._jit_instantiation is not None:
+            retval.append(self._jit_instantiation)
+        if self._tune is not None:
+            retval.append(self._tune)
+        if self._stream is not None:
+            retval.append(self._stream)
+        else:
+            retval.append(KernelStream())
+
+        retval.extend(flatten([self._grid, self._mins, self._maxs]))
+
+        retval.extend(super().expr_symbols)
+
+        return tuple(filter_ordered(retval))
 
     def __repr__(self):
         ret = "" if self.retobj is None else "%s = " % self.retobj
@@ -327,7 +375,10 @@ class CudaKernelPointerCast(ExprStmt, Node):
             calc = lambda x: self.function._C_get_field(FULL, x).size
 
         return tuple(
-            DummyEq(TemplateParameter("%s_sz_%s" % (self.function.name, d.name)), calc(d))
+            DummyEq(
+                TemplateParameter("%s_sz_%s" % (self.function.name, d.name)),
+                calc(d),
+            )
             for d in self.function.dimensions[1:]
         )
 
@@ -377,7 +428,7 @@ class CudaKernelTuner(ExprStmt, Node):
         return (self._output_kernel,)
 
 
-class KernelStream(CudaStream, Global):
+class KernelStream(CudaStream, Scalar):
     def __init__(cls, *args, **kwargs):
         super().__init__("kernel_stream")
 
@@ -385,7 +436,7 @@ class KernelStream(CudaStream, Global):
         return super().__new__(cls, "kernel_stream")
 
 
-class MemCopyStream(CudaStream, Global):
+class MemCopyStream(CudaStream, Scalar):
     def __init__(cls, *args, **kwargs):
         super().__init__("memcpy_stream")
 
@@ -393,7 +444,7 @@ class MemCopyStream(CudaStream, Global):
         return super().__new__(cls, "memcpy_stream")
 
 
-class HostStream(CudaStream, Global):
+class HostStream(CudaStream, Scalar):
     def __init__(cls, *args, **kwargs):
         super().__init__("host_stream")
 
@@ -401,7 +452,7 @@ class HostStream(CudaStream, Global):
         return super().__new__(cls, "host_stream")
 
 
-class NcclStream(CudaStream, Global):
+class NcclStream(CudaStream, Scalar):
     def __init__(cls, *args, **kwargs):
         super().__init__("nccl_stream")
 
@@ -420,7 +471,10 @@ class CudaStorage:
 
     @cached_property
     def device_storage(self):
-        return "%s->%s" % (self.function._C_name, self.function._C_field_device_data)
+        return "%s->%s" % (
+            self.function._C_name,
+            self.function._C_field_device_data,
+        )
 
     @cached_property
     def host_storage(self):
@@ -569,9 +623,27 @@ class CudaCheckError(CLiteral):
         )
 
 
+class Checked(Call):
+    def __init__(self, arguments=None, name=None):
+        super().__init__("Checked", arguments=tuple(flatten([arguments])))
+
+    @cached_property
+    def expr_symbols(self):
+        return flatten([x.expr_symbols for x in flatten(self.arguments)])
+
+
 class CudaChecked(Call):
     def __init__(self, arguments=None, name=None):
         super().__init__("CudaChecked", arguments=tuple(flatten([arguments])))
+
+    @cached_property
+    def expr_symbols(self):
+        return flatten([x.expr_symbols for x in flatten(self.arguments)])
+
+
+class NcclChecked(Call):
+    def __init__(self, arguments=None, name=None):
+        super().__init__("NcclChecked", arguments=tuple(flatten([arguments])))
 
     @cached_property
     def expr_symbols(self):

@@ -1,39 +1,39 @@
+from typing import Any
+
 import cgen as c
 
-from devito.cuda.nodes import CudaTransferDirection
-
 from devito.arch import CUDA, NVIDIAX
+from devito.arch.archinfo import Platform
+from devito.cuda.nodes import (
+    CudaAlloc,
+    CudaChecked,
+    CudaDealloc,
+    CudaTransfer,
+    CudaTransferDirection,
+    HostStream,
+    KernelStream,
+    MemCopyStream,
+    NcclStream,
+)
+from devito.cuda.types import JitifyProgram
 from devito.ir import (
-    Call,
-    List,
     Block,
-    ParallelIteration,
-    Pragma,
+    Call,
     Definition,
     FindSymbols,
     Lambda,
+    List,
+    ParallelIteration,
+    Pragma,
 )
-from devito.passes.iet.parpragma import PragmaLangBB, PragmaTransfer
-from devito.symbolics import Byref, VOID, INT
-
-from devito.passes.iet.languages.openmp import OmpRegion, OmpIteration
+from devito.passes.iet.languages.openmp import OmpIteration, OmpRegion
 from devito.passes.iet.languages.utils import make_clause_reduction
 from devito.passes.iet.misc import is_on_device
+from devito.passes.iet.parpragma import PragmaLangBB, PragmaTransfer
+from devito.symbolics import INT, VOID, Byref
 from devito.tools import filter_ordered
 from devito.types import Symbol
-from devito.cuda.nodes import (
-    KernelStream,
-    HostStream,
-    # NcclStream,
-    MemCopyStream,
-    CudaChecked,
-    CudaTransfer,
-    CudaAlloc,
-    CudaDealloc,
-)
-from devito.cuda.types import JitifyProgram
 from devito.types.parallel import DeviceID
-
 
 __all__ = ["CudaBB", "DeviceCudaIteration"]
 
@@ -89,7 +89,7 @@ class DeviceCudaIteration(ParallelIteration):
 
 
 class CudaBB(PragmaLangBB):
-    mapper = {
+    mapper: dict[Platform | str, Any] = {
         # Misc
         "name": "CUDA",
         "headers": [
@@ -110,15 +110,24 @@ class CudaBB(PragmaLangBB):
         "aligned": lambda i: "__attribute__((aligned(%d)))" % i,
         "init": lambda args: List(
             body=[
+                Definition(HostStream()),
+                Definition(MemCopyStream()),
+                Definition(KernelStream()),
+                Definition(NcclStream()),
                 Call("SET_DEVICE", (DeviceID(),)),
                 Call("ENSURE_STREAM", (HostStream(),)),
                 Call("ENSURE_STREAM", (MemCopyStream(),)),
                 Call("ENSURE_STREAM", (KernelStream(),)),
-                # Call("ENSURE_STREAM", (NcclStream(),)),
+                # NCCL should be higher priority to hopefully ensure that
+                # halo exchanges overlap with compute
+                Call("ENSURE_STREAM_PRIO", (NcclStream(), "-1")),
                 Call("ENSURE_CACHE", ()),
                 Definition(
                     JitifyProgram("program"),
-                    initvalue=Call("kernel_cache.program", ("_cudaKernels", 0)),
+                    initvalue=Call(
+                        "kernel_cache.program",
+                        ("_cudaKernels", 0, "NVRTC_OPTS"),
+                    ),
                 ),
                 Call("nvtxRangePush", ("__FUNCTION__",)),
             ]
@@ -126,7 +135,7 @@ class CudaBB(PragmaLangBB):
         "fini": lambda args: List(body=[Call("nvtxRangePop")]),
         "num-devices": lambda args, retobj: Block(
             body=[
-                c.Initializer(c.Value("int", "_num_devices"), 0),
+                c.Initializer(c.Value("int", "_num_devices"), "0"),
                 Call("cudaGetDeviceCount", (INT(Byref(retobj), "*"))),
             ]
         ),
@@ -281,7 +290,7 @@ class CudaBB(PragmaLangBB):
         ngpus = Symbol(name="_num_gpus")
         return ngpus, List(
             body=[
-                c.Initializer(c.Value("int", "_num_gpus"), 0),
+                c.Initializer(c.Value("int", "_num_gpus"), "0"),
                 Call("cudaGetDeviceCount", (INT(Byref(ngpus), "*"))),
             ]
         )

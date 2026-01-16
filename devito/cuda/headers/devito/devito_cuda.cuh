@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <nccl.h>
 #include <set>
 #include <stdexcept>
 #include <stdio.h>
@@ -109,17 +110,34 @@ inline void critical(const std::string &format, Args... args) {
   log(LogLevel::CRITICAL, format, std::forward<Args>(args)...);
 }
 
+#define Checked(f)                                                             \
+  {                                                                            \
+    auto _ret = (f);                                                           \
+    if (_ret != 0) {                                                           \
+      return _ret;                                                             \
+    }                                                                          \
+  }
 /**
  * CUDA error helpers
  */
 #define CudaChecked(f)                                                         \
   {                                                                            \
-    if (!_cudaChecked((f), __FILE__, __LINE__))                                \
+    if (!_cudaChecked((cudaError_t)(f), __FILE__, __LINE__))                   \
       return -1;                                                               \
   }
 #define CudaCheckedEx(f, msg)                                                  \
   {                                                                            \
-    if (!_cudaChecked((f), __FILE__, __LINE__, msg))                           \
+    if (!_cudaChecked((cudaError_t)(f), __FILE__, __LINE__, msg))              \
+      return -1;                                                               \
+  }
+#define NcclChecked(f)                                                         \
+  {                                                                            \
+    if (!_ncclChecked((ncclResult_t)(f), __FILE__, __LINE__))                  \
+      return -1;                                                               \
+  }
+#define NcclCheckedEx(f, msg)                                                  \
+  {                                                                            \
+    if (!_ncclChecked((ncclResult_t)(f), __FILE__, __LINE__, msg))             \
       return -1;                                                               \
   }
 
@@ -178,20 +196,27 @@ inline void critical(const std::string &format, Args... args) {
 /**
  * Miscellaneous helpers
  */
-#define ENSURE_STREAM(NAME)                                                    \
+
+#define ENSURE_STREAM_PRIO(NAME, PRIORITY)                                     \
   static cudaStream_t NAME##_devs[MAX_CUDA_DEVICES] = {0};                     \
-  [[maybe_unused]] cudaStream_t NAME = nullptr;                                \
+  /*[[maybe_unused]] cudaStream_t NAME = nullptr;*/                            \
+  (void)NAME;                                                                  \
   {                                                                            \
     int device = _cudaGetCurrentDevice();                                      \
     if (device < 0)                                                            \
       return -1;                                                               \
-    if (NAME##_devs[device] == nullptr)                                        \
-      CudaCheckedEx(cudaStreamCreateWithFlags(&NAME##_devs[device],            \
-                                              cudaStreamNonBlocking),          \
+    if (NAME##_devs[device] == nullptr) {                                      \
+      int priority = PRIORITY;                                                 \
+      CudaCheckedEx(cudaStreamCreateWithPriority(&NAME##_devs[device],         \
+                                                 cudaStreamNonBlocking,        \
+                                                 priority),                    \
                     "creating CUDA stream " STRINGIFY(NAME));                  \
-                                                                               \
+    }                                                                          \
     NAME = NAME##_devs[device];                                                \
+    (void)NAME;                                                                \
   };
+
+#define ENSURE_STREAM(NAME) ENSURE_STREAM_PRIO(NAME, 0)
 
 #define ENSURE_CACHE()                                                         \
   static jitify::JitCache caches[MAX_CUDA_DEVICES];                            \
@@ -233,6 +258,31 @@ inline bool _cudaChecked(cudaError_t err, const char *file, int line,
     acquire_gil_and_raise_error("!!! CUDA Error in operator: %s:%d %s%s", file,
                                 line, (extra != nullptr) ? extra : "",
                                 cudaGetErrorString(err));
+
+    // Attempt to clear the current CUDA error
+    cudaDeviceSynchronize();
+    cudaGetLastError();
+
+    return false;
+  }
+
+  return true;
+}
+
+inline bool _ncclChecked(ncclResult_t err, const char *file, int line,
+                         const char *extra = nullptr) {
+  // if (err == ncclInProgress) {
+  //     ncclResult_t state = err;
+  //     do {
+  //         ncclCommGetAsyncError(comm, &state);
+  //     } while (state == ncclInProgress);
+  //     err = state;
+  // }
+
+  if (err != ncclSuccess) {
+    acquire_gil_and_raise_error("!!! NCCL Error in operator: %s:%d %s%s", file,
+                                line, (extra != nullptr) ? extra : "",
+                                ncclGetErrorString(err));
 
     // Attempt to clear the current CUDA error
     cudaDeviceSynchronize();
@@ -292,6 +342,53 @@ inline int _allocTempArray(T **array_ptr, size_t nbytes, const char *name) {
 
   return 0;
 }
+template <typename T> T round_down(T value, T factor) {}
+
+template <typename... Args>
+inline int _launchKernel(const char *file, int line, const char *kname,
+                         jitify::KernelInstantiation &kernel,
+                         std::tuple<dim3, dim3> tune, cudaStream_t stream,
+                         dim3 mins, dim3 maxs, Args... args) {
+  dim3 threads = std::get<0>(tune);
+  dim3 tb = dim3(threads.x * threads.y * threads.z);
+  dim3 threads_sub = std::get<1>(tune);
+  dim3 block_sizes = dim3(threads.x * threads_sub.x, threads.y * threads_sub.y,
+                          threads.z * threads_sub.z);
+
+  // Convert our minimum values to block-aligned offsets
+  dim3 offsets = dim3((mins.x / block_sizes.x) * block_sizes.x,
+                      (mins.y / block_sizes.y) * block_sizes.y,
+                      (mins.z / block_sizes.z) * block_sizes.z);
+
+  // Resize the grid based on the block sizes and offsets
+  dim3 grid(
+      (int)(fmaxf(1.,
+                  ceil((float)(maxs.x - offsets.x) / (float)(block_sizes.x)))),
+      (int)(fmaxf(1.,
+                  ceil((float)(maxs.y - offsets.y) / (float)(block_sizes.y)))),
+      (int)(fmaxf(1,
+                  ceil((float)(maxs.z - offsets.z) / (float)(block_sizes.z)))));
+
+  if (grid.x >= 1 && grid.y >= 1 && grid.z >= 1) {
+    // printf("%s: grid(%d, %d, %d), threads(%d, %d, %d), min=(%d, %d, %d),
+    // max=(%d, %d, %d)\n", kname, grid.x, grid.y, grid.z, threads.x, threads.y,
+    // threads.z, mins.x, mins.y, mins.z, maxs.x, maxs.y, maxs.z);
+    _cudaChecked(
+        (cudaError_t)(kernel.configure(grid, tb, 0, stream)
+                          .launch(offsets, std::forward<Args>(args)...)),
+        file, line);
+  }
+
+  return 0;
+}
+
+#define launchKernel(KNAME, ...)                                               \
+  {                                                                            \
+    if (_launchKernel(__FILE__, __LINE__, STRINGIFY(KNAME), KNAME##_tuned,     \
+                      KNAME##_tune, __VA_ARGS__) < 0) {                        \
+      return -1;                                                               \
+    }                                                                          \
+  }
 
 inline uint64_t next_pow2(uint64_t x) {
   return (__builtin_popcount(x) == 1 || x == 1)
@@ -639,6 +736,10 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
     }
   }
 
+  for (int i = max_block_dimension; i < 3; i++) {
+    dim3_set(preferred, i, 1);
+  }
+
   debug("=== performing tuning for %s with default block "
         "%d,%d,%d, sub-block "
         "%d,%d,%d, and expected grid size (%d, %d, %d)",
@@ -831,9 +932,7 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   return result;
 }
 
-
-static bool
-exceptionOccured() {
+static bool exceptionOccured() {
 #ifndef OPERATOR_STANDALONE
   PyGILState_STATE gstate;
   gstate = PyGILState_Ensure();

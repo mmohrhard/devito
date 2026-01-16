@@ -1,12 +1,15 @@
 import ctypes
+
 import sympy
-from devito.types import Scalar, Global
+
 from devito.symbolics.extended_sympy import ReservedWord
+from devito.types import Global, Scalar
 from devito.types.array import ArrayMapped
 from devito.types.parallel import DeviceSymbol
 from devito.types.utils import DimensionTuple
 
 __all__ = [
+    "CudaError",
     "CudaEvent",
     "CudaStream",
     "NullPointer",
@@ -25,6 +28,15 @@ class cudaStream_t(ctypes.Structure):
 
 
 c_cudaEvent_p = ctypes.POINTER(cudaEvent_t)
+
+
+class CudaError(Scalar):
+    def __init__(self, name):
+        super().__init__(name=name, dtype=ctypes.c_int)
+
+    @property
+    def _C_typename(self):
+        return "cudaError_t"
 
 
 class CudaEvent(Scalar):
@@ -55,7 +67,7 @@ class JitifyCache(Global):
     def _C_typename(self):
         return "jitify::JitCache"
 
-    def __init__(cls, name, *args, **kwargs):
+    def __init__(self, name, *args, **kwargs):
         super().__init__(name, dtype=ctypes.c_void_p)
 
     def __new__(cls, *args, **kwargs):
@@ -72,6 +84,28 @@ class JitifyProgram(Global):
 
     def __new__(cls, name, *args, **kwargs):
         return super().__new__(cls, name)
+
+
+class JitifyKernelInstantiation(Scalar):
+    def __init__(self, name, *_):
+        super().__init__(name=name, dtype=ctypes.c_void_p)
+
+    @property
+    def _C_typename(self):
+        return "jitify::KernelInstantiation"
+
+    @property
+    def _C_arg_typename(self):
+        return "jitify::KernelInstantiation&"
+
+
+class JitKernelTuningParams(Scalar):
+    def __init__(self, name, *_):
+        super().__init__(name=name, dtype=ctypes.c_void_p)
+
+    @property
+    def _C_typename(self):
+        return "std::tuple<dim3, dim3> "
 
 
 class EnlargedBuffer(ArrayMapped):

@@ -521,7 +521,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
             #    f"{fs.filename}:{fs.name}:{fs.lineno}"
             #    for fs in extract_stack()[-2::-1]
             #]
-            
+
         self._is_halo_dirty = True
         self._device_dirty = True
 
@@ -880,14 +880,14 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         if not MPI.Is_initialized() or MPI.COMM_WORLD.size == 1:
             # Nothing to do
             return
-        
+
         if MPI.COMM_WORLD.size > 1 and self._distributor is None:
             raise RuntimeError("`%s` cannot perform a halo exchange as it has "
                                "no Grid attached" % self.name)
 
         if not self._is_halo_dirty:
             return
-        
+
         neighborhood = self._distributor.neighborhood
         comm = self._distributor.comm
 
@@ -952,7 +952,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     @property
     def device_name(self):
         return "_device_data_" + self.name
-    
+
     def _arg_defaults(self, alias=None, read=True, write=True):
         """
         A map of default argument values defined by this symbol.
