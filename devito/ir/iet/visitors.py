@@ -195,7 +195,7 @@ class CGen(Visitor):
         Generate cgen function call arguments from an iterable of symbols and expressions.
         """
         ret = []
-        for i in filter_ordered(args):
+        for i in args:
             try:
                 if isinstance(i, Call):
                     ret.append(self._visit(i, nested_call=True))

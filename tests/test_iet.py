@@ -105,6 +105,20 @@ def test_nested_calls_cgen():
     assert str(code) == 'foo(bar());'
 
 
+def test_repeated_args_cgen():
+    x = Symbol(name='x')
+    c = Call('bar', [x, x])
+    call = Call('foo', [
+        c,
+        c,
+        Call('baz', [1, 2, 1])
+    ])
+
+    code = CGen().visit(call)
+
+    assert str(code) == 'foo(bar(x,x),bar(x,x),baz(1,2,1));'
+
+
 @pytest.mark.parametrize('mode,expected', [
     ('basics', '["x"]'),
     ('symbolics', '["f"]')

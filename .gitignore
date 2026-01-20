@@ -1,13 +1,9 @@
 *.pyc
 *.npy
-
 *.json
-
 .cache
-
 _site
 docs/_build
-
 .ipynb_checkpoints
-
 devito.egg-info/*
+.idea
