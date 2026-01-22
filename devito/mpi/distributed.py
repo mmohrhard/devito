@@ -13,7 +13,7 @@ from devito.parameters import configuration
 from devito.tools import EnrichedTuple, as_tuple, ctypes_to_cstr, filter_ordered
 from devito.types import CompositeObject, Object
 
-from devito.logger import info
+from devito.logger import info, debug
 
 # Maximum operation size for safe broadcast/reduce below
 MPI_NBYTES_MAX = 1024 * 1024 * 1024
@@ -200,12 +200,17 @@ class Distributor(AbstractDistributor):
             # mpi4py takes care of that when the object gets out of scope
             self._input_comm = (input_comm or MPI.COMM_WORLD).Clone()
 
+            debug(f"we have {self._input_comm.size} ranks")
             from devito.mpi.nccl import NcclCommunicator
-            if NcclCommunicator.is_available():
-                info("NCCL is available - attempting to use it")
-                self._nccl_comm = NcclCommunicator(self._input_comm)
-            else:
-                info("NCCL is not available")
+
+            # Only initialize NCCL if we're using an MPI configuration that support it
+            self._nccl_comm = None
+            if NcclCommunicator.should_use_for_mode(configuration["mpi"]):
+                if NcclCommunicator.is_available():
+                    info("NCCL is available - attempting to use it")
+                    self._nccl_comm = NcclCommunicator(self._input_comm)
+                else:
+                    info("NCCL is not available")
 
             if topology is None:
                 # `MPI.Compute_dims` sets the dimension sizes to be as close to each other
@@ -219,7 +224,9 @@ class Distributor(AbstractDistributor):
             else:
                 self._topology = topology
 
-            if self._input_comm is not input_comm:
+            if self._input_comm is not input_comm or not isinstance(
+                self._input_comm, MPI.Cartcomm
+            ):
                 # By default, Devito arranges processes into a cartesian topology.
                 # MPI works with numbered dimensions and follows the C row-major
                 # numbering of the ranks, i.e. in a 2x3 Cartesian topology (0,0)
@@ -245,7 +252,7 @@ class Distributor(AbstractDistributor):
     @property
     def nccl_comm(self):
         return self._nccl_comm
-    
+
     @property
     def myrank(self):
         if self.comm is not MPI.COMM_NULL:
@@ -402,9 +409,11 @@ class Distributor(AbstractDistributor):
 
     @cached_property
     def _obj_nccl(self):
-        """ An object representing the NCCL communicator."""
+        """An object representing the NCCL communicator."""
+        if self._nccl_comm is None:
+            return None
         return self._nccl_comm.comm_object
-    
+
     @cached_property
     def _obj_neighborhood(self):
         """

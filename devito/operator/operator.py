@@ -486,7 +486,7 @@ class Operator(Callable):
     @cached_property
     def reads(self):
         return tuple(self._reads)
-    
+
     def _prepare_arguments(self, autotune=None, **kwargs):
         """
         Process runtime arguments passed to ``.apply()` and derive
@@ -495,7 +495,7 @@ class Operator(Callable):
         # Sanity check -- all user-provided keywords must be known to the Operator
         if not configuration['ignore-unknowns']:
             for k, v in kwargs.items():
-                if k not in self._known_arguments:
+                if k not in self._known_arguments and k != "allocator":
                     raise ValueError("Unrecognized argument %s=%s" % (k, v))
 
         overrides, defaults = split(self.input, lambda p: p.name in kwargs)
@@ -509,8 +509,8 @@ class Operator(Callable):
         for p in overrides:
             r = True if p.name in [r.name for r in reads] else False
             w = True if p.name in [w.name for w in writes] else False
-            
-            args.update(p._arg_values(**kwargs, 
+
+            args.update(p._arg_values(**kwargs,
                                       read = r,
                                       write = w))
             try:
@@ -523,7 +523,7 @@ class Operator(Callable):
             if p.name in args:
                 # E.g., SubFunctions
                 continue
-            for k, v in p._arg_values(**kwargs, 
+            for k, v in p._arg_values(**kwargs,
                                       read = True if p.name in [r.name for r in reads] else False,
                                       write = True if p.name in [w.name for w in writes] else False).items():
                 if k in args and args[k] != v:
@@ -1083,7 +1083,7 @@ def parse_kwargs(**kwargs):
             raise ValueError("Argument `language` should be a `str`")
         if language not in configuration._accepted['language']:
             raise InvalidOperator("Illegal `language=%s`" % str(language))
-        kwargs['language'] = language
+        kwargs["language"] = language
     elif kwopenmp is not None:
         # Handle deprecated `openmp` kwarg for backward compatibility
         kwargs['language'] = 'openmp' if openmp else 'C'

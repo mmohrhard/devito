@@ -11,7 +11,12 @@ from devito.symbolics.queries import q_routine
 from devito.symbolics.search import search
 from devito.tools import as_tuple
 
-__all__ = ['compare_ops', 'count', 'estimate_cost']
+__all__ = ['compare_ops', 'count', 'estimate_cost', 'EstimateCostMixin']
+
+
+class EstimateCostMixin(object):
+    def _estimate_cost(self, estimate, estimator) -> tuple[int, bool]:
+        pass
 
 
 def compare_ops(e1, e2):
@@ -118,15 +123,19 @@ estimate_values = {
 def _estimate_cost(expr, estimate):
     # Retval: flops (int), flag (bool)
     # The flag tells wether it's an integer expression (implying flops==0) or not
-    flops, flags = zip(*[_estimate_cost(a, estimate) for a in expr.args])
-    flops = sum(flops)
-    if all(flags):
-        # `expr` is an operation involving integer operands only
-        # NOTE: one of the operands may contain, internally, non-integer
-        # operations, e.g. the `a*b` in `2 + INT(a*b)`
-        return flops, True
+    if isinstance(expr, EstimateCostMixin):
+        flops, flags = expr._estimate_cost(estimate, _estimate_cost)
+        return flops, flags
     else:
-        return flops + (len(expr.args) - 1), False
+        flops, flags = zip(*[_estimate_cost(a, estimate) for a in expr.args])
+        flops = sum(flops)
+        if all(flags):
+            # `expr` is an operation involving integer operands only
+            # NOTE: one of the operands may contain, internally, non-integer
+            # operations, e.g. the `a*b` in `2 + INT(a*b)`
+            return flops, True
+        else:
+            return flops + (len(expr.args) - 1), False
 
 
 @_estimate_cost.register(Tuple)

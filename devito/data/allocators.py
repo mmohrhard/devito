@@ -452,7 +452,7 @@ class CudaAllocator(MemoryAllocator):
         elif self.type == CudaAllocationType.SHARED:
             ret = self.lib.cudaMallocManaged(
                 ctypes.byref(c_pointer), c_bytesize, CUDA_MEM_ATTACH_GLOBAL
-            ) 
+            )
         else:
             raise RuntimeError(f"Invalid CUDA allocation type '{self.type}'")
 
@@ -504,7 +504,10 @@ class CudaAllocator(MemoryAllocator):
             self._throw_cuda_error(f"trying to set current device to {device}")
 
     def __str__(self):
-        return "%s(%s)" % (self.__class__.__name__, self.type)
+        devicestr = ""
+        if self.type != CudaAllocationType.HOST:
+            devicestr = ", device " + str(self.device)
+        return "%s(%s%s)" % (self.__class__.__name__, self.type, devicestr)
 
     __repr__ = __str__
 

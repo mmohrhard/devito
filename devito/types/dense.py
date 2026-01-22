@@ -541,6 +541,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         get back. If you only need to look at the values, use
         :meth:`data_ro_domain` instead.
         """
+        assert self._data is not None
         self._mark_halo_dirty()
         return self._data._global(self._mask_domain, self._decomposition)
 
@@ -656,6 +657,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     @_allocate_memory
     def data_ro_domain(self):
         """Read-only view of the domain data values."""
+        assert self._data is not None
         self._ensure_host_update()
 
         view = self._data._global(self._mask_domain, self._decomposition)
@@ -666,6 +668,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     @_allocate_memory
     def data_ro_with_halo(self):
         """Read-only view of the domain+outhalo data values."""
+        assert self._data is not None
         self._ensure_host_update()
 
         view = self._data._global(self._mask_outhalo, self._decomposition_outhalo)
@@ -684,6 +687,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         -----
         This accessor does *not* support global indexing.
         """
+        assert self._data is not None
         self._ensure_host_update()
         self._halo_exchange()
         view = self._data[self._mask_inhalo]
@@ -700,6 +704,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         -----
         This accessor does *not* support global indexing.
         """
+        assert self._data is not None
         self._ensure_host_update()
         self._halo_exchange()
         view = self._data.view()
@@ -718,7 +723,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         -----
         This accessor does *not* support global indexing.
         """
-        self._ensure_host_update()        
+        assert self._data is not None
+        self._ensure_host_update()
         # Note that we don't do a halo exchange here because
         # write-only implies that nobody cares about the current
         # values of the data
@@ -1038,14 +1044,14 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         key = alias or self
 
         if self._device_allocator is not None and (
-            self._device_data is None 
+            self._device_data is None
             or self._device_data.shape != args[key.name].shape
         ):
             # Make sure that the device allocation matches the size expected
             if self._device_data is not None:
                 self._device_data.free()
                 self._device_data = None
-            self._device_data = self._DeviceDataType(self.shape_allocated,
+            self._device_data = self._DeviceDataType(args[key.name].shape,
                                                      self.dtype,
                                                      allocator=self._device_allocator)
 

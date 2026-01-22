@@ -26,8 +26,8 @@
 #endif
 
 #ifndef NVRTC_CUDA_ARCH
-// Default to compute capability 7.0 aka V100
-#define NVRTC_CUDA_ARCH compute_70
+// Default to compute capability 8.0 aka A100
+#define NVRTC_CUDA_ARCH compute_80
 #endif
 
 #ifdef KERNEL_DEBUGGING
@@ -37,12 +37,12 @@
 #endif
 
 #define NVRTC_OPTS                                                             \
-  {                                                                            \
-    "--ftz=true", "--fmad=true", "--prec-sqrt=true", "--prec-div=true",        \
-        DEBUG_OPTS "--modify-stack-limit=false", "--split-compile=4",          \
-        "--gpu-architecture=" STRINGIFY(NVIDIA_CUDA_ARCH),                     \
-        "--extra-device-vectorization", "--minimal", "--restrict"              \
-  }
+  {"--ftz=true",                                                               \
+   "--fmad=true",                                                              \
+   "--prec-sqrt=true",                                                         \
+   "--prec-div=true",                                                          \
+   DEBUG_OPTS "--gpu-architecture=" STRINGIFY(NVRTC_CUDA_ARCH),                \
+   "--std=c++11"}
 
 /**
  * LOGGING
@@ -213,7 +213,7 @@ inline void critical(const std::string &format, Args... args) {
                     "creating CUDA stream " STRINGIFY(NAME));                  \
     }                                                                          \
     NAME = NAME##_devs[device];                                                \
-    (void)NAME;                                                                \
+    cudaStreamSynchronize(NAME);                                               \
   };
 
 #define ENSURE_STREAM(NAME) ENSURE_STREAM_PRIO(NAME, 0)

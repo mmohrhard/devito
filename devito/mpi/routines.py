@@ -1,4 +1,5 @@
 import abc
+
 from collections import OrderedDict
 from ctypes import POINTER, c_void_p, c_int, sizeof
 from functools import reduce
@@ -6,17 +7,17 @@ from itertools import product
 from operator import mul
 from devito.symbolics.extended_sympy import CondAnd
 
-from sympy import And, Integer
+from sympy import And, Add, Mul, Integer
 
 from devito.data import OWNED, HALO, NOPAD, LEFT, CENTER, RIGHT
 from devito.ir.equations import DummyEq
-from devito.ir.iet import (Call, Callable, Conditional, Expression, ExpressionBundle,
-                           AugmentedExpression, Iteration, List, Prodder, Return,
-                           make_efunc, FindNodes, Transformer)
+from devito.ir.iet import (Call, Callable, Conditional, derive_parameters, Expression, ElementalFunction,
+                           ExpressionBundle, AugmentedExpression, Iteration, List, Prodder,
+                           Return, make_efunc, FindNodes, Transformer)
 from devito.mpi import MPI
 from devito.symbolics import (Byref, CondNe, FieldFromPointer, FieldFromComposite,
-                              IndexedPointer, Macro, cast_mapper, subs_op_args)
-from devito.tools import dtype_to_mpitype, dtype_to_ctype, flatten, generator
+                              IndexedPointer, Macro, cast_mapper, ccode, subs_op_args)
+from devito.tools import as_tuple, dtype_to_mpitype, dtype_to_ctype, dtype_to_cstr, flatten, generator
 from devito.types import Array, Dimension, Eq, Symbol, LocalObject, CompositeObject
 
 __all__ = ['HaloExchangeBuilder', 'mpi_registry']
@@ -501,7 +502,6 @@ class DiagHaloExchangeBuilder(BasicHaloExchangeBuilder):
 
 
 class OverlapHaloExchangeBuilder(DiagHaloExchangeBuilder):
-
     """
     A DiagHaloExchangeBuilder making use of asynchronous MPI routines to implement
     computation-communication overlap.
@@ -869,8 +869,8 @@ class FullHaloExchangeBuilder(Overlap2HaloExchangeBuilder):
     def _call_poke(self, poke):
         return Prodder(poke.name, poke.parameters, single_thread=True, periodic=True)
 
-class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
 
+class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
     """
     A OverlapHaloExchangeBuilder with reduced Call overhead and increased code
     readability, achieved by supplying more values via Python-land-produced
@@ -885,14 +885,24 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
     """
 
     def _make_compute(self, hs, key, msgs, callpoke):
+        import cgen as c
+
         if hs.body.is_Call:
             return None
         else:
-            mapper = {i: List(body=[i]) for i in
-                      FindNodes(ExpressionBundle).visit(hs.body)}
-            iet = Transformer(mapper).visit(hs.body)
-            return make_efunc('compute%d' % key, iet, hs.arguments)
-
+            mapper = {
+                i: List(body=[i])
+                for i in FindNodes(ExpressionBundle).visit(hs.body)
+            }
+            iet = List(body=[Transformer(mapper).visit(hs.body), callpoke])
+            return ElementalFunction(
+                "compute%d" % key,
+                [iet, c.Statement("return cudaSuccess")],
+                "int",
+                derive_parameters(iet),  # + [KernelStream()],
+                "static",
+                hs.arguments,
+            )
 
     def _call_compute(self, hs, compute, *args):
         if compute is None:
@@ -900,7 +910,7 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
             return hs.body._rebuild(dynamic_args_mapper=hs.omapper.core)
         else:
             return compute.make_call(dynamic_args_mapper=hs.omapper.core)
-        
+
     def _make_region(self, hs, key):
         return MPIRegion('reg', key, hs.arguments, hs.omapper.owned)
 
@@ -917,23 +927,34 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
 
     def _make_haloupdate(self, f, hse, key, *args, msg=None):
         # semantically:
-        # 
+        #
         # perform gathers on kernel_stream
         # block nccl_stream on kernel_stream
         # start nccl group
         # perform nccl comms
         # end nccl group
-        from devito.passes.iet.languages.cuda import KernelStream, NcclStream, CudaChecked
-        from devito.mpi.nccl import NcclComm
-        from devito.types.parallel import CudaEvent
+        import cgen as c
+
+        from devito.cuda.nodes import (
+            Checked,
+            CudaChecked,
+            KernelStream,
+            NcclChecked,
+            NcclStream,
+        )
+        from devito.cuda.types import CudaEvent
         from devito.ir.iet.nodes import Definition
         from devito.tools import dtype_to_nccltype
 
-        update_event = CudaEvent("update_event")
-        setup_ev = Call("cudaEventCreateWithFlags", (Byref(update_event), "cudaEventDisableTiming"))
+        update_event = CudaEvent("update_event_" + f.name)
+        setup_ev = CudaChecked(
+            Call(
+                "cudaEventCreateWithFlags",
+                (Byref(update_event), "cudaEventDisableTiming"),
+            )
+        )
 
-        cast = cast_mapper[(f.dtype, '*')]
-        comm = f.grid.distributor._obj_comm
+        cast = cast_mapper[(f.dtype, "*")]
 
         nccl_comm = f.grid.distributor._obj_nccl
 
@@ -949,51 +970,89 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
         fromrank = FieldFromComposite(msg._C_field_from, msgi)
         torank = FieldFromComposite(msg._C_field_to, msgi)
 
-        sizes = [FieldFromComposite('%s[%d]' % (msg._C_field_sizes, i), msgi)
-                 for i in range(len(f._dist_dimensions))]
-        ofsg = [FieldFromComposite('%s[%d]' % (msg._C_field_ofsg, i), msgi)
-                for i in range(len(f._dist_dimensions))]
+        sizes = [
+            FieldFromComposite("%s[%d]" % (msg._C_field_sizes, i), msgi)
+            for i in range(len(f._dist_dimensions))
+        ]
+        ofsg = [
+            FieldFromComposite("%s[%d]" % (msg._C_field_ofsg, i), msgi)
+            for i in range(len(f._dist_dimensions))
+        ]
         ofsg = [fixed.get(d) or ofsg.pop(0) for d in f.dimensions]
 
         # The `gather` is unnecessary if sending to MPI.PROC_NULL
 
-        gather = Call('gather%s' % key, [cast(bufg)] + sizes + [f] + ofsg)
-        gather = Conditional(CondNe(torank, Macro('MPI_PROC_NULL')), gather)
+        gather = Checked(
+            Call(
+                "gather%s" % key,
+                [cast(bufg)] + sizes + [f] + ofsg + [KernelStream()],
+            )
+        )
+        gather = Conditional(CondNe(torank, Macro("MPI_PROC_NULL")), gather)
 
-        ncomms = Symbol(name='ncomms')
+        ncomms = Symbol(name="ncomms")
 
         gathers = Iteration([gather], dim, ncomms - 1)
 
         define_ev = Definition(update_event, initvalue="nullptr", shape=None)
-        record_ev = Call('cudaEventRecord', (update_event, KernelStream()))
-        wait_ev = Call('cudaStreamWaitEvent', (NcclStream(), update_event))
-        destroy_ev = Call('cudaEventDestroy', (update_event,))
+        record_ev = CudaChecked(
+            Call("cudaEventRecord", (update_event, KernelStream()))
+        )
+        wait_ev = CudaChecked(
+            Call("cudaStreamWaitEvent", (NcclStream(), update_event))
+        )
+        destroy_ev = CudaChecked(Call("cudaEventDestroy", (update_event,)))
 
-        # Make Irecv/Isend
+        # Make the NCCL send/receive calls
         count = reduce(mul, sizes, 1)
-        #rrecv = Byref(FieldFromComposite(msg._C_field_rrecv, msgi))
-        #rsend = Byref(FieldFromComposite(msg._C_field_rsend, msgi))
-        
-        recv = Call("ncclRecv", (bufs, count, Macro(dtype_to_nccltype(f.dtype)), fromrank, nccl_comm, NcclStream()))
-        recv = Conditional(CondNe(fromrank, Macro('MPI_PROC_NULL')), recv)
-        send = Call("ncclSend", (bufs, count, Macro(dtype_to_nccltype(f.dtype)), torank, nccl_comm, NcclStream()))
-        send = Conditional(CondNe(torank, Macro('MPI_PROC_NULL')), send)
+
+        recv = NcclChecked(
+            Call(
+                "ncclRecv",
+                (
+                    bufs,
+                    count,
+                    Macro(dtype_to_nccltype(f.dtype)),
+                    fromrank,
+                    nccl_comm,
+                    NcclStream(),
+                ),
+            )
+        )
+        recv = Conditional(CondNe(fromrank, Macro("MPI_PROC_NULL")), recv)
+        send = NcclChecked(
+            Call(
+                "ncclSend",
+                (
+                    bufs,
+                    count,
+                    Macro(dtype_to_nccltype(f.dtype)),
+                    torank,
+                    nccl_comm,
+                    NcclStream(),
+                ),
+            )
+        )
+        send = Conditional(CondNe(torank, Macro("MPI_PROC_NULL")), send)
 
         # The -1 below is because an Iteration, by default, generates <=
         comms = Iteration([recv, send], dim, ncomms - 1)
-        body = List(body=[
-            define_ev,
-            setup_ev,
-            gathers,
-            record_ev,
-            wait_ev,
-            destroy_ev,
-            Call("ncclGroupStart"),
-            comms,
-            Call("ncclGroupEnd")
-        ])
+        body = List(
+            body=[
+                define_ev,
+                setup_ev,
+                gathers,
+                record_ev,
+                wait_ev,
+                destroy_ev,
+                NcclChecked(Call("ncclGroupStart")),
+                comms,
+                NcclChecked(Call("ncclGroupEnd")),
+                c.Statement("return 0"),
+            ]
+        )
         parameters = ([f, nccl_comm, msg, ncomms]) + list(fixed.values())
-        return HaloUpdate('haloupdate%s' % key, body, parameters)
+        return Callable("haloupdate%s" % key, body, "int", parameters, "static")
 
     def _call_haloupdate(self, name, f, hse, msg):
         nccl_comm = f.grid.distributor._obj_nccl
@@ -1008,19 +1067,34 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
         # cudaWaitEvent(kernel_stream, tmp)
         # cudaEventDestroy(tmp)
         # as the background copy is on a different stream to our usual kernel execution
-        #return Callable('halowait%d_tmp' % key, List(body=[]), 'void', [], ('static', ))
-        from devito.passes.iet.languages.cuda import KernelStream, NcclStream, CudaChecked
-        from devito.mpi.nccl import NcclComm
-        from devito.types.parallel import CudaEvent
+        # return Callable('halowait%d_tmp' % key, List(body=[]), 'void', [], ('static', ))
+
+        import cgen as c
+
+        from devito.cuda.nodes import (
+            Checked,
+            CudaChecked,
+            KernelStream,
+            NcclStream,
+        )
+        from devito.cuda.types import CudaEvent
         from devito.ir.iet.nodes import Definition
-        from devito.tools import dtype_to_nccltype
 
         wait_event = CudaEvent("update_event")
-        setup_ev = Call("cudaEventCreateWithFlags", (Byref(wait_event), "cudaEventDisableTiming"))
+        setup_ev = CudaChecked(
+            Call(
+                "cudaEventCreateWithFlags",
+                (Byref(wait_event), "cudaEventDisableTiming"),
+            )
+        )
         define_ev = Definition(wait_event, initvalue="nullptr", shape=None)
-        record_ev = Call('cudaEventRecord', (wait_event, NcclStream()))
-        wait_ev = Call('cudaStreamWaitEvent', (KernelStream(), wait_event))
-        destroy_ev = Call('cudaEventDestroy', (wait_event,))
+        record_ev = CudaChecked(
+            Call("cudaEventRecord", (wait_event, NcclStream()))
+        )
+        wait_ev = CudaChecked(
+            Call("cudaStreamWaitEvent", (KernelStream(), wait_event))
+        )
+        destroy_ev = CudaChecked(Call("cudaEventDestroy", (wait_event,)))
 
         nccl_comm = f.grid.distributor._obj_nccl
 
@@ -1036,40 +1110,56 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
 
         fromrank = FieldFromComposite(msg._C_field_from, msgi)
 
-        sizes = [FieldFromComposite('%s[%d]' % (msg._C_field_sizes, i), msgi)
-                 for i in range(len(f._dist_dimensions))]
-        ofss = [FieldFromComposite('%s[%d]' % (msg._C_field_ofss, i), msgi)
-                for i in range(len(f._dist_dimensions))]
+        sizes = [
+            FieldFromComposite("%s[%d]" % (msg._C_field_sizes, i), msgi)
+            for i in range(len(f._dist_dimensions))
+        ]
+        ofss = [
+            FieldFromComposite("%s[%d]" % (msg._C_field_ofss, i), msgi)
+            for i in range(len(f._dist_dimensions))
+        ]
         ofss = [fixed.get(d) or ofss.pop(0) for d in f.dimensions]
 
-        sync = Call("cudaDeviceSynchronize", [])
         # The `scatter` must be guarded as we must not alter the halo values along
         # the domain boundary, where the sender is actually MPI.PROC_NULL
-        scatter = Call('scatter%s' % key, [cast(bufs)] + sizes + [f] + ofss)
-        scatter = Conditional(CondNe(fromrank, Macro('MPI_PROC_NULL')), scatter)
-
-        rrecv = Byref(FieldFromComposite(msg._C_field_rrecv, msgi))
-        waitrecv = Call('MPI_Wait', [rrecv, Macro('MPI_STATUS_IGNORE')])
-        rsend = Byref(FieldFromComposite(msg._C_field_rsend, msgi))
-        waitsend = Call('MPI_Wait', [rsend, Macro('MPI_STATUS_IGNORE')])
+        scatter = Checked(
+            Call(
+                "scatter%s" % key,
+                [cast(bufs)] + sizes + [f] + ofss + [KernelStream()],
+            )
+        )
+        scatter = Conditional(CondNe(fromrank, Macro("MPI_PROC_NULL")), scatter)
 
         # The -1 below is because an Iteration, by default, generates <=
-        ncomms = Symbol(name='ncomms')
+        ncomms = Symbol(name="ncomms")
         iet = Iteration([scatter], dim, ncomms - 1)
-        body = List(body=[
-            define_ev,
-            setup_ev,
-            record_ev,
-            wait_ev,
-            iet,
-            destroy_ev
-        ])
-        parameters = ([f, nccl_comm] + list(fixed.values()) + [msg, ncomms])
-        return Callable('halowait%d' % key, body, 'void', parameters, ('static',))
+        body = List(
+            body=[
+                define_ev,
+                setup_ev,
+                record_ev,
+                wait_ev,
+                iet,
+                destroy_ev,
+                c.Statement("return 0"),
+            ]
+        )
+        parameters = [f, nccl_comm] + list(fixed.values()) + [msg, ncomms]
+        return Callable(
+            "halowait%d" % key, body, "int", parameters, ("static",)
+        )
 
     def _call_halowait(self, name, f, hse, msg):
-        args = [f, f.grid.distributor._obj_nccl] + list(hse.loc_indices.values()) + [msg, msg.npeers]
-        return HaloWaitCall(name, args)
+        from devito.cuda.nodes import CudaChecked, KernelStream, NcclStream
+
+        args = (
+            [f, f.grid.distributor._obj_nccl]
+            + list(hse.loc_indices.values())
+            + [msg, msg.npeers]
+            + [KernelStream(), NcclStream()]
+        )
+
+        return CudaChecked(HaloWaitCall(name, args))
 
     def _make_wait(self, *args, **kwargs):
         return
@@ -1078,64 +1168,178 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
         return
 
     def _make_remainder(self, hs, key, callcompute, region):
+        import cgen as c
+
         assert callcompute.is_Call
 
-        dim = Dimension(name='i')
+        dim = Dimension(name="i")
         region_i = IndexedPointer(region, dim)
 
         dynamic_args_mapper = {}
         for i in hs.arguments:
             if i.is_Dimension:
-                dynamic_args_mapper[i] = (FieldFromComposite(i.min_name, region_i),
-                                          FieldFromComposite(i.max_name, region_i))
+                dynamic_args_mapper[i] = (
+                    FieldFromComposite(i.min_name, region_i),
+                    FieldFromComposite(i.max_name, region_i),
+                )
             else:
                 dynamic_args_mapper[i] = (FieldFromComposite(i.name, region_i),)
 
         iet = callcompute._rebuild(dynamic_args_mapper=dynamic_args_mapper)
+
         # The -1 below is because an Iteration, by default, generates <=
         iet = Iteration(iet, dim, region.nregions - 1)
 
-        return make_efunc('remainder%d' % key, iet)
-    
+        body = List(body=[iet, c.Statement("return 0")])
+        return ElementalFunction(
+            "remainder%d" % key, body, "int", derive_parameters(iet), "static"
+        )
+
     def _call_remainder(self, remainder):
         efunc = remainder.make_call()
         call = RemainderCall(efunc.name, efunc.arguments)
         return call
 
-class NcclDiag2HaloExchangeBuilder(NcclOverlapHaloExchangeBuilder):
-    
-    def _make_region(self, hs, key):
-        return
+    def _make_copy(self, f, hse, key, swap=False):
+        import cgen as c
 
-    def _make_compute(self, hs, key, *args):
-        return
+        from devito.cuda.nodes import (
+            CudaStorage,
+            KernelStream,
+        )
 
-    def _call_compute(self, hs, compute, *args):
-        return
+        dims = [d.root for d in f.dimensions if d not in hse.loc_indices]
+        buf = Array(name="buf", dimensions=dims, dtype=f.dtype, padding=0)
+        dtype = dtype_to_cstr(f.dtype)
+        storage = CudaStorage(f).device_storage
 
-    def _make_remainder(self, hs, key, callcompute, region):
-        # Just a dummy value, other than a Callable, so that we enter `_call_remainder`
-        return hs.body
+        f_offsets = []
+        f_indices = []
+        for d, h in zip(f.dimensions, f._size_nodomain.left):
+            offset = Symbol(name="o%s" % d.root, is_const=True)
+            f_offsets.append(offset)
+            f_indices.append(offset)
 
-    def _call_remainder(self, remainder):
-        return remainder
+        if swap is False:
+            name = "gather%s" % key
+        else:
+            name = "scatter%s" % key
 
-    def _make_msg(self, f, hse, key):
-        # Only retain the halos required by the Diag scheme
-        halos = sorted(i for i in hse.halos if isinstance(i.dim, tuple))
-        return MPIMsgEnriched('msg%d' % key, f, halos)
+        fn_strides = [
+            Mul(
+                *(f.symbolic_shape[i + 1 :] if i < len(f.indices) - 1 else [1])
+            )
+            for i in range(len(f_indices))
+        ]
+        fn_offset = Add(
+            *[
+                Mul(fn_strides[i], f_indices[i]) if i < 1 else 0
+                for i in range(len(f_indices))
+            ]
+        )
+        fn_ptr = storage
+
+        fn_ptr = "((%s *)(%s)) + (%s)" % (dtype, fn_ptr, ccode(fn_offset))
+        fn_pitch = "sizeof(%s) * (%s)" % (dtype, ccode(f.symbolic_shape[-1]))
+        fn_pos_elements = [
+            (ccode(f_indices[-i]) if len(dims) >= i else "0")
+            for i in range(1, 4)
+        ]
+        fn_pos = "make_cudaPos(sizeof(%s) * (%s), (%s), (%s))" % (
+            as_tuple([dtype] + fn_pos_elements)
+        )
+
+        fn_y = ccode(f.symbolic_shape[-2])
+
+        buf_ptr = buf._C_name
+
+        buf_ptr = "%s" % (buf_ptr)
+        buf_pitch = "sizeof(%s) * (%s)" % (dtype, ccode(dims[-1].symbolic_size))
+        buf_pos_elements = [0, 0, 0]
+        buf_pos = "make_cudaPos(sizeof(%s) * (%s), (%s), (%s))" % (
+            as_tuple([dtype] + buf_pos_elements)
+        )
+
+        buf_y = ccode(dims[-2].symbolic_size)
+
+        if swap is False:
+            src_ptr = fn_ptr
+            src_pitch = fn_pitch
+            src_pos = fn_pos
+            src_y = fn_y
+
+            dst_ptr = buf_ptr
+            dst_pitch = buf_pitch
+            dst_pos = buf_pos
+            dst_y = buf_y
+        else:
+            src_ptr = buf_ptr
+            src_pitch = buf_pitch
+            src_pos = buf_pos
+            src_y = buf_y
+
+            dst_ptr = fn_ptr
+            dst_pitch = fn_pitch
+            dst_pos = fn_pos
+            dst_y = fn_y
+
+        extents = [
+            ccode(dims[-1].symbolic_size),
+            (
+                ("(" + ccode(dims[-2].symbolic_size) + ")")
+                if len(dims) >= 2
+                else "1"
+            ),
+            (
+                ("(" + ccode(dims[-3].symbolic_size) + ")")
+                if len(dims) >= 3
+                else "1"
+            ),
+        ]
+        extent = "make_cudaExtent(sizeof(%s) * (%s), %s, %s)" % (
+            dtype,
+            *extents,
+        )
+
+        ops = [
+            c.Statement("struct cudaMemcpy3DParms copy_params = {0}"),
+            c.Statement(
+                "copy_params.srcPtr = make_cudaPitchedPtr(%s, %s, %s, %s)"
+                % (src_ptr, src_pitch, src_pitch, src_y)
+            ),
+            c.Statement("copy_params.srcPos = %s" % src_pos),
+            c.Statement(
+                "copy_params.dstPtr = make_cudaPitchedPtr(%s, %s, %s, %s)"
+                % (dst_ptr, dst_pitch, dst_pitch, dst_y)
+            ),
+            c.Statement("copy_params.dstPos = %s" % dst_pos),
+            c.Statement("copy_params.extent = %s" % extent),
+            c.Statement("copy_params.kind = cudaMemcpyDeviceToDevice"),
+
+            c.Statement(
+                "CudaChecked(cudaMemcpy3DAsync(&copy_params, %s))"
+                % ccode(KernelStream())
+            ),
+            # c.Statement("CudaChecked(cudaDeviceSynchronize())"),
+            c.Statement("return 0"),
+        ]
+
+        parameters = (
+            [buf] + list(buf.shape) + [f] + f_offsets + [KernelStream()]
+        )
+
+        return Callable(name, List(body=ops), "int", parameters, ("static",))
 
 
 mpi_registry = {
     True: BasicHaloExchangeBuilder,
-    'basic': BasicHaloExchangeBuilder,
-    'diag': DiagHaloExchangeBuilder,
-    'diag2': Diag2HaloExchangeBuilder,
-    'overlap': OverlapHaloExchangeBuilder,
-    'overlap2': Overlap2HaloExchangeBuilder,
-    'full': FullHaloExchangeBuilder,
-    'nccl_overlap': NcclOverlapHaloExchangeBuilder,
-    'nccl_diag2': NcclDiag2HaloExchangeBuilder
+    "basic": BasicHaloExchangeBuilder,
+    "diag": DiagHaloExchangeBuilder,
+    "diag2": Diag2HaloExchangeBuilder,
+    "overlap": OverlapHaloExchangeBuilder,
+    "overlap2": Overlap2HaloExchangeBuilder,
+    "full": FullHaloExchangeBuilder,
+    "nccl_overlap": NcclOverlapHaloExchangeBuilder,
 }
 
 
@@ -1143,9 +1347,10 @@ mpi_registry = {
 
 
 class MPICallable(Callable):
-
     def __init__(self, name, body, parameters):
-        super(MPICallable, self).__init__(name, body, 'void', parameters, ('static',))
+        super(MPICallable, self).__init__(
+            name, body, "void", parameters, ("static",)
+        )
 
 
 class CopyBuffer(MPICallable):
@@ -1153,7 +1358,6 @@ class CopyBuffer(MPICallable):
 
 
 class SendRecv(MPICallable):
-
     def __init__(self, name, body, parameters, bufg, bufs):
         super(SendRecv, self).__init__(name, body, parameters)
         self.bufg = bufg
@@ -1161,33 +1365,31 @@ class SendRecv(MPICallable):
 
 
 class HaloUpdate(MPICallable):
-
     def __init__(self, name, body, parameters):
         super(HaloUpdate, self).__init__(name, body, parameters)
 
 
 # Call sub-hierarchy
 
-class IsendCall(Call):
 
+class IsendCall(Call):
     def __init__(self, arguments):
-        super().__init__('MPI_Isend', arguments)
+        super().__init__("MPI_Isend", arguments)
 
 
 class IrecvCall(Call):
-
     def __init__(self, arguments):
-        super().__init__('MPI_Irecv', arguments)
+        super().__init__("MPI_Irecv", arguments)
 
 
 class NcclSendCall(Call):
     def __init__(self, arguments):
-        super().__init__('ncclSend', arguments)
+        super().__init__("ncclSend", arguments)
 
 
 class NcclRecvCall(Call):
     def __init__(self, arguments):
-        super().__init__('ncclRecv', arguments)
+        super().__init__("ncclRecv", arguments)
 
 
 class MPICall(Call):
@@ -1222,27 +1424,24 @@ class HaloWaitList(MPIList):
 
 
 class MPIStatusObject(LocalObject):
-
-    dtype = type('MPI_Status', (c_void_p,), {})
+    dtype = type("MPI_Status", (c_void_p,), {})
 
 
 class MPIRequestObject(LocalObject):
-
-    dtype = type('MPI_Request', (c_void_p,), {})
+    dtype = type("MPI_Request", (c_void_p,), {})
 
 
 class MPIMsg(CompositeObject):
-
-    _C_field_bufs = 'bufs'
-    _C_field_bufg = 'bufg'
-    _C_field_sizes = 'sizes'
-    _C_field_rrecv = 'rrecv'
-    _C_field_rsend = 'rsend'
+    _C_field_bufs = "bufs"
+    _C_field_bufg = "bufg"
+    _C_field_sizes = "sizes"
+    _C_field_rrecv = "rrecv"
+    _C_field_rsend = "rsend"
 
     if MPI._sizeof(MPI.Request) == sizeof(c_int):
-        c_mpirequest_p = type('MPI_Request', (c_int,), {})
+        c_mpirequest_p = type("MPI_Request", (c_int,), {})
     else:
-        c_mpirequest_p = type('MPI_Request', (c_void_p,), {})
+        c_mpirequest_p = type("MPI_Request", (c_void_p,), {})
 
     fields = [
         (_C_field_bufs, c_void_p),
@@ -1252,13 +1451,13 @@ class MPIMsg(CompositeObject):
         (_C_field_rsend, c_mpirequest_p),
     ]
 
-    __rargs__ = ('name', 'target', 'halos')
+    __rargs__ = ("name", "target", "halos")
 
     def __init__(self, name, target, halos):
         self._target = target
         self._halos = halos
 
-        super().__init__(name, 'msg', self.fields)
+        super().__init__(name, "msg", self.fields)
 
         # Required for buffer allocation/deallocation before/after jumping/returning
         # to/from C-land
@@ -1272,13 +1471,16 @@ class MPIMsg(CompositeObject):
     def _C_memfree(self):
         # Deallocate the MPI buffers
         for i in self._memfree_args:
+            # print("deallocating!")
             self._allocator.free(*i)
         self._memfree_args[:] = []
+
+        self._allocated = False
 
     def __value_setup__(self, dtype, value):
         # We eventually produce an array of `struct msg` that is as big as
         # the number of peers we have to communicate with
-        return (dtype._type_*self.npeers)()
+        return (dtype._type_ * self.npeers)()
 
     @property
     def target(self):
@@ -1309,18 +1511,25 @@ class MPIMsg(CompositeObject):
                 except AttributeError:
                     assert side == CENTER
                     shape.append(target._size_domain[dim])
-            entry.sizes = (c_int*len(shape))(*shape)
+            entry.sizes = (c_int * len(shape))(*shape)
 
             # Allocate the send/recv buffers
             size = reduce(mul, shape)
             ctype = dtype_to_ctype(target.dtype)
             if not self._allocated:
-                entry.bufg, bufg_memfree_args = allocator._alloc_C_libcall(size, ctype)
-                entry.bufs, bufs_memfree_args = allocator._alloc_C_libcall(size, ctype)
+                # print("allocating MPI message buffers with " + str(allocator))
+                entry.bufg, bufg_memfree_args = allocator._alloc_C_libcall(
+                    size, ctype
+                )
+                entry.bufs, bufs_memfree_args = allocator._alloc_C_libcall(
+                    size, ctype
+                )
 
                 # The `memfree_args` will be used to deallocate the buffer upon returning
                 # from C-land
-                self._memfree_args.extend([bufg_memfree_args, bufs_memfree_args])
+                self._memfree_args.extend(
+                    [bufg_memfree_args, bufs_memfree_args]
+                )
 
         self._allocated = True
 
@@ -1328,27 +1537,25 @@ class MPIMsg(CompositeObject):
 
     def _arg_values(self, args=None, **kwargs):
         return self._arg_defaults(
-            args.allocator,
-            alias=kwargs.get(self.target.name, self.target)
+            args.allocator, alias=kwargs.get(self.target.name, self.target)
         )
 
     def _arg_apply(self, *args, **kwargs):
-        pass
-        #self._C_memfree()
+        # pass
+        self._C_memfree()
 
 
 class MPIMsgEnriched(MPIMsg):
-
-    _C_field_ofss = 'ofss'
-    _C_field_ofsg = 'ofsg'
-    _C_field_from = 'fromrank'
-    _C_field_to = 'torank'
+    _C_field_ofss = "ofss"
+    _C_field_ofsg = "ofsg"
+    _C_field_from = "fromrank"
+    _C_field_to = "torank"
 
     fields = MPIMsg.fields + [
         (_C_field_ofss, POINTER(c_int)),
         (_C_field_ofsg, POINTER(c_int)),
         (_C_field_from, c_int),
-        (_C_field_to, c_int)
+        (_C_field_to, c_int),
     ]
 
     def _arg_defaults(self, allocator, alias=None):
@@ -1369,13 +1576,15 @@ class MPIMsgEnriched(MPIMsg):
                         f"side should be CENTER but was {type(side)}{side}"
                     )
                     ofsg.append(function._offset_owned[dim].left)
-            entry.ofsg = (c_int*len(ofsg))(*ofsg)
+            entry.ofsg = (c_int * len(ofsg))(*ofsg)
             # `fromrank` peer + scatter offsets
             entry.fromrank = neighborhood[tuple(i.flip() for i in halo.side)]
             ofss = []
             for dim, side in zip(*halo):
                 try:
-                    ofss.append(getattr(function._offset_halo[dim], side.flip().name))
+                    ofss.append(
+                        getattr(function._offset_halo[dim], side.flip().name)
+                    )
                 except AttributeError:
                     assert side == CENTER, (
                         f"side should be CENTER but was {type(side)}{side}"
@@ -1384,14 +1593,13 @@ class MPIMsgEnriched(MPIMsg):
                     # If it's the CENTER we need, we can't use `_offset_halo[d].left`
                     # as otherwise we would be picking the corner
                     ofss.append(function._offset_owned[dim].left)
-            entry.ofss = (c_int*len(ofss))(*ofss)
+            entry.ofss = (c_int * len(ofss))(*ofss)
 
         return {self.name: self.value}
 
 
 class MPIRegion(CompositeObject):
-
-    __rargs__ = ('prefix', 'key', 'arguments', 'owned')
+    __rargs__ = ("prefix", "key", "arguments", "owned")
 
     def __init__(self, prefix, key, arguments, owned):
         self._prefix = prefix
@@ -1418,7 +1626,7 @@ class MPIRegion(CompositeObject):
         # We eventually produce an array of `struct region` that is as big as
         # the number of OWNED sub-regions we have to compute to complete a
         # halo update
-        return (dtype._type_*self.nregions)()
+        return (dtype._type_ * self.nregions)()
 
     @property
     def arguments(self):
