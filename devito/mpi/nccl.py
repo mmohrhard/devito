@@ -47,17 +47,18 @@ class NcclComm(Object):
 
 class NcclCommunicator:
     attempted_load = False
+    nccl_lib = None
 
     @classmethod
     def get_nccl(cls):
         cls.attempted_load = True
         nccl_handle = "libnccl.so"
         try:
-            from cuda import cuda
+            from cuda.bindings.driver import CUresult, cuDeviceGetCount
 
             # We can't use NCCL if CUDA doesn't load properly
-            ret, devcount = cuda.cuDeviceGetCount()
-            if ret != cuda.CUresult.CUDA_SUCCESS:
+            ret, devcount = cuDeviceGetCount()
+            if ret != CUresult.CUDA_SUCCESS:
                 cls.nccl_lib = None
                 return
 
@@ -73,7 +74,7 @@ class NcclCommunicator:
             ]
 
         except OSError:
-            cls.nccl_lib = None
+            pass
 
         except ImportError:
             pass
@@ -90,7 +91,8 @@ class NcclCommunicator:
         return isinstance(mode, str) and mode.startswith("nccl")
 
     def __init__(self, comm: MPI.Cartcomm):
-        from cuda import cuda, cudart
+        from cuda.bindings.driver import CUresult, cuDeviceGetCount
+        from cuda.bindings.runtime import cudaSetDevice
 
         self._comm = comm
         info(
@@ -113,14 +115,14 @@ class NcclCommunicator:
         split_comm = comm.Split(MPI.COMM_TYPE_SHARED, 0)
         local_rank = split_comm.rank
 
-        ret, gpu_count = cuda.cuDeviceGetCount()
+        ret, gpu_count = cuDeviceGetCount()
 
-        if ret == cuda.CUresult.CUDA_SUCCESS and gpu_count > 0:
+        if ret == CUresult.CUDA_SUCCESS and gpu_count > 0:
             info(
                 f"binding MPI rank {global_rank} of {comm.size} to gpu {local_rank % gpu_count} of {gpu_count} on the local machine"
             )
 
-            cudart.cudaSetDevice(local_rank % gpu_count)
+            cudaSetDevice(local_rank % gpu_count)
 
             self._nccl_comm_t = ncclCommunicator_t(0)
             self.nccl_lib.ncclGroupStart()
