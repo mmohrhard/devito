@@ -21,7 +21,7 @@ from devito.types.object import AbstractObject
 from devito.types import Indexed, Symbol, Global
 
 __all__ = ['Node', 'Block', 'Expression', 'Callable', 'Call',
-           'Conditional', 'Iteration', 'List', 'Section', 'TimedList', 'Prodder',
+           'Conditional', 'Iteration', 'List', 'BraceInitializedList', 'Section', 'TimedList', 'Prodder',
            'MetaCall', 'PointerCast', 'HaloSpot', 'Definition', 'ExpressionBundle',
            'AugmentedExpression', 'Increment', 'Return', 'While', 'DeviceCall', 'DeviceFunction',
            'ParallelIteration', 'ParallelBlock', 'Dereference', 'Lambda',
@@ -214,6 +214,35 @@ class Block(List):
         self.header = as_tuple(header)
         self.body = as_tuple(body)
         self.footer = as_tuple(footer)
+
+
+class BraceInitializedList(Node):
+    _traversable = ['elements']
+
+    def __init__(self, elements=None):
+        self.elements = as_tuple(elements)
+
+    @cached_property
+    def expr_symbols(self):
+        retval = []
+        for i in self.elements:
+            if isinstance(i, AbstractFunction):
+                continue
+            elif isinstance(i, (Indexed, IndexedBase, AbstractObject, Symbol)):
+                retval.append(i)
+            elif isinstance(i, Call):
+                retval.extend(i.expr_symbols)
+            else:
+                try:
+                    retval.extend(i.free_symbols)
+                except AttributeError:
+                    pass
+
+        return tuple(filter_ordered(retval))
+
+    @cached_property
+    def free_symbols(self):
+        return self.expr_symbols
 
 
 class Call(ExprStmt, Node):
@@ -427,7 +456,7 @@ class Expression(ExprStmt, Node):
         True if this Expression should write its output atomically
         """
         return self.atomic
-    
+
     @property
     def defines(self):
         return (self.output.base,) if self.is_initializable else ()
@@ -1369,7 +1398,7 @@ class AddressOf(Node):
     @property
     def child(self):
         return self._child
-    
+
 
 # Nodes required for distributed-memory halo exchange
 

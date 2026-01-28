@@ -122,6 +122,7 @@ class CudaBB(PragmaLangBB):
                 # halo exchanges overlap with compute
                 Call("ENSURE_STREAM_PRIO", (NcclStream(), "-1")),
                 Call("ENSURE_CACHE", ()),
+                Call("DEVITO_CUDA_PROLOGUE", ()),
                 Definition(
                     JitifyProgram("program"),
                     initvalue=Call(
@@ -129,10 +130,9 @@ class CudaBB(PragmaLangBB):
                         ("_cudaKernels", 0, "NVRTC_OPTS"),
                     ),
                 ),
-                Call("nvtxRangePush", ("__FUNCTION__",)),
             ]
         ),
-        "fini": lambda args: List(body=[Call("nvtxRangePop")]),
+        "fini": lambda args: List(body=[Call("DEVITO_CUDA_EPILOGUE")]),
         "num-devices": lambda args, retobj: Block(
             body=[
                 c.Initializer(c.Value("int", "_num_devices"), "0"),

@@ -6,3 +6,4 @@ from .realign import *  # noqa
 from .tuning import *  # noqa
 from .cudaizer import *  # noqa
 from .rewrite_memcpy import *  # noqa
+from .timing import *  # noqa

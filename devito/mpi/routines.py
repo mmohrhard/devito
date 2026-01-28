@@ -11,7 +11,7 @@ from sympy import And, Add, Mul, Integer
 
 from devito.data import OWNED, HALO, NOPAD, LEFT, CENTER, RIGHT
 from devito.ir.equations import DummyEq
-from devito.ir.iet import (Call, Callable, Conditional, derive_parameters, Expression, ElementalFunction,
+from devito.ir.iet import (BraceInitializedList, Call, Callable, Conditional, derive_parameters, Expression, ElementalFunction,
                            ExpressionBundle, AugmentedExpression, Iteration, List, Prodder,
                            Return, make_efunc, FindNodes, Transformer)
 from devito.mpi import MPI
@@ -292,7 +292,7 @@ class BasicHaloExchangeBuilder(HaloExchangeBuilder):
             self._efuncs.append(wait)
         if sendrecv is not None:
             self._efuncs.append(sendrecv)
-        self._efuncs.extend([gather, scatter])
+        self._efuncs.extend(x for x in flatten([gather, scatter]) if x is not None)
 
         return haloupdate, halowait
 
@@ -884,7 +884,93 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
         remainder()
     """
 
-    def _make_compute(self, hs, key, msgs, callpoke):
+    def make(self, hs):
+        """
+        Construct Callables and Calls implementing distributed-memory halo
+        exchange for the HaloSpot ``hs``.
+        """
+        from devito.cuda.nodes import (
+            Checked, NcclStream, KernelStream)
+        # Sanity check
+        assert all(f.is_Function and f.grid is not None for f in hs.fmapper)
+        key = self._gen_compkey()
+        mapper = {}
+        for f, hse in hs.fmapper.items():
+            # Build an MPIMsg, a data structure to be propagated across the
+            # various halo exchange routines
+            try:
+                msg = self._msgs[(f, hse)]
+            except KeyError:
+                key = self._gen_msgkey()
+                msg = self._msgs.setdefault((f, hse), self._make_msg(f, hse, key))
+
+            # Callables for send/recv/wait
+            # mapper[(f, hse)] = self._make_all(f, hse, msg)
+
+        msgs = [self._msgs[(f, hse)] for f, hse in hs.fmapper.items()]
+
+        # Callable for compute over the CORE region
+        compute = self._make_compute(hs, key, msgs)
+        if isinstance(compute, Callable):
+            self._efuncs.append(compute)
+
+        # Callable for compute over the OWNED region
+        region = self._make_region(hs, key)
+        region = self._regions.setdefault(hs, region)
+        callcompute = self._call_compute(hs, compute, msgs)
+        remainder = self._make_remainder(hs, key, callcompute, region)
+        if isinstance(remainder, Callable):
+            self._efuncs.append(remainder)
+
+        # Now build up the HaloSpot body, with explicit Calls to the constructed Callables
+        haloupdates = []
+        halowaits = []
+        halos_by_peers = dict()
+        for i, (f, hse) in enumerate(hs.fmapper.items()):
+            msg = self._msgs[(f, hse)]
+            if msg.npeers not in halos_by_peers:
+                halos_by_peers[msg.npeers] = []
+            halos_by_peers[msg.npeers].append((f, hse, msg))
+
+            # haloupdate, halowait = mapper[(f, hse)]
+            # haloupdates.append(self._call_haloupdate(haloupdate.name, f, hse, msg))
+            # if halowait is not None:
+            #     halowaits.append(self._call_halowait(halowait.name, f, hse, msg))
+        body = []
+        for npeers, fes in halos_by_peers.items():
+            funcs = []
+            msgs = []
+            hses = []
+            for f, hse, msg in fes:
+                funcs.append(f)
+                hses.append(hse)
+                msgs.append(msg)
+
+            body.append(Checked(Call("devito_cuda_async_multi_haloupdate<dataobj *, msg *>", [BraceInitializedList(elements=funcs), BraceInitializedList(elements=msgs)]
+                + list(hses[0].loc_indices.values()) + [npeers, NcclStream(), KernelStream(), funcs[0].grid.distributor._obj_nccl]
+            )))
+        # body.append(NcclHaloUpdateList(body=haloupdates))
+        if callcompute is not None:
+            body.append(callcompute)
+        # body.append(NcclHaloWaitList(body=halowaits))
+        for npeers, fes in halos_by_peers.items():
+            funcs = []
+            msgs = []
+            hses = []
+            for f, hse, msg in fes:
+                funcs.append(f)
+                hses.append(hse)
+                msgs.append(msg)
+
+            body.append(Checked(Call("devito_cuda_async_multi_halowait<dataobj *, msg *>", [BraceInitializedList(elements=funcs), BraceInitializedList(elements=msgs)]
+                + list(hses[0].loc_indices.values()) + [npeers, NcclStream(), KernelStream(), funcs[0].grid.distributor._obj_nccl]
+            )))
+        if remainder is not None:
+            body.append(self._call_remainder(remainder))
+
+        return List(body=body)
+
+    def _make_compute(self, hs, key, msgs):
         import cgen as c
 
         if hs.body.is_Call:
@@ -894,12 +980,12 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
                 i: List(body=[i])
                 for i in FindNodes(ExpressionBundle).visit(hs.body)
             }
-            iet = List(body=[Transformer(mapper).visit(hs.body), callpoke])
+            iet = List(body=[Transformer(mapper).visit(hs.body)])
             return ElementalFunction(
                 "compute%d" % key,
                 [iet, c.Statement("return cudaSuccess")],
                 "int",
-                derive_parameters(iet),  # + [KernelStream()],
+                derive_parameters(iet),
                 "static",
                 hs.arguments,
             )
@@ -926,6 +1012,7 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
         return
 
     def _make_haloupdate(self, f, hse, key, *args, msg=None):
+        return
         # semantically:
         #
         # perform gathers on kernel_stream
@@ -982,12 +1069,13 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
 
         # The `gather` is unnecessary if sending to MPI.PROC_NULL
 
-        gather = Checked(
-            Call(
-                "gather%s" % key,
-                [cast(bufg)] + sizes + [f] + ofsg + [KernelStream()],
-            )
-        )
+        # gather = Checked(
+        #     Call(
+        #         "gather%s" % key,
+        #         [cast(bufg)] + sizes + [f] + ofsg + [KernelStream()],
+        #     )
+        # )
+        gather = Checked(Call("devito_cuda_async_gather_4d", [cast(bufg)] + [f] + sizes + ofsg + [KernelStream()]))
         gather = Conditional(CondNe(torank, Macro("MPI_PROC_NULL")), gather)
 
         ncomms = Symbol(name="ncomms")
@@ -1060,6 +1148,7 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
         return HaloUpdateCall(name, args)
 
     def _make_halowait(self, f, hse, key, *args, msg=None):
+        return
         # this just needs to do (pseudocode)
         # cudaEvent_t tmp
         # cudaCreateEvent(tmp)
@@ -1122,12 +1211,13 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
 
         # The `scatter` must be guarded as we must not alter the halo values along
         # the domain boundary, where the sender is actually MPI.PROC_NULL
-        scatter = Checked(
-            Call(
-                "scatter%s" % key,
-                [cast(bufs)] + sizes + [f] + ofss + [KernelStream()],
-            )
-        )
+        # scatter = Checked(
+        #     Call(
+        #         "scatter%s" % key,
+        #         [cast(bufs)] + sizes + [f] + ofss + [KernelStream()],
+        #     )
+        # )
+        scatter = Checked(Call("devito_cuda_async_scatter_4d", [f] + [cast(bufs)] + sizes + ofss + [KernelStream()]))
         scatter = Conditional(CondNe(fromrank, Macro("MPI_PROC_NULL")), scatter)
 
         # The -1 below is because an Iteration, by default, generates <=
@@ -1201,134 +1291,9 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
         return call
 
     def _make_copy(self, f, hse, key, swap=False):
-        import cgen as c
+        # This is all done in a C++ helper function now
+        return None
 
-        from devito.cuda.nodes import (
-            CudaStorage,
-            KernelStream,
-        )
-
-        dims = [d.root for d in f.dimensions if d not in hse.loc_indices]
-        buf = Array(name="buf", dimensions=dims, dtype=f.dtype, padding=0)
-        dtype = dtype_to_cstr(f.dtype)
-        storage = CudaStorage(f).device_storage
-
-        f_offsets = []
-        f_indices = []
-        for d, h in zip(f.dimensions, f._size_nodomain.left):
-            offset = Symbol(name="o%s" % d.root, is_const=True)
-            f_offsets.append(offset)
-            f_indices.append(offset)
-
-        if swap is False:
-            name = "gather%s" % key
-        else:
-            name = "scatter%s" % key
-
-        fn_strides = [
-            Mul(
-                *(f.symbolic_shape[i + 1 :] if i < len(f.indices) - 1 else [1])
-            )
-            for i in range(len(f_indices))
-        ]
-        fn_offset = Add(
-            *[
-                Mul(fn_strides[i], f_indices[i]) if i < 1 else 0
-                for i in range(len(f_indices))
-            ]
-        )
-        fn_ptr = storage
-
-        fn_ptr = "((%s *)(%s)) + (%s)" % (dtype, fn_ptr, ccode(fn_offset))
-        fn_pitch = "sizeof(%s) * (%s)" % (dtype, ccode(f.symbolic_shape[-1]))
-        fn_pos_elements = [
-            (ccode(f_indices[-i]) if len(dims) >= i else "0")
-            for i in range(1, 4)
-        ]
-        fn_pos = "make_cudaPos(sizeof(%s) * (%s), (%s), (%s))" % (
-            as_tuple([dtype] + fn_pos_elements)
-        )
-
-        fn_y = ccode(f.symbolic_shape[-2])
-
-        buf_ptr = buf._C_name
-
-        buf_ptr = "%s" % (buf_ptr)
-        buf_pitch = "sizeof(%s) * (%s)" % (dtype, ccode(dims[-1].symbolic_size))
-        buf_pos_elements = [0, 0, 0]
-        buf_pos = "make_cudaPos(sizeof(%s) * (%s), (%s), (%s))" % (
-            as_tuple([dtype] + buf_pos_elements)
-        )
-
-        buf_y = ccode(dims[-2].symbolic_size)
-
-        if swap is False:
-            src_ptr = fn_ptr
-            src_pitch = fn_pitch
-            src_pos = fn_pos
-            src_y = fn_y
-
-            dst_ptr = buf_ptr
-            dst_pitch = buf_pitch
-            dst_pos = buf_pos
-            dst_y = buf_y
-        else:
-            src_ptr = buf_ptr
-            src_pitch = buf_pitch
-            src_pos = buf_pos
-            src_y = buf_y
-
-            dst_ptr = fn_ptr
-            dst_pitch = fn_pitch
-            dst_pos = fn_pos
-            dst_y = fn_y
-
-        extents = [
-            ccode(dims[-1].symbolic_size),
-            (
-                ("(" + ccode(dims[-2].symbolic_size) + ")")
-                if len(dims) >= 2
-                else "1"
-            ),
-            (
-                ("(" + ccode(dims[-3].symbolic_size) + ")")
-                if len(dims) >= 3
-                else "1"
-            ),
-        ]
-        extent = "make_cudaExtent(sizeof(%s) * (%s), %s, %s)" % (
-            dtype,
-            *extents,
-        )
-
-        ops = [
-            c.Statement("struct cudaMemcpy3DParms copy_params = {0}"),
-            c.Statement(
-                "copy_params.srcPtr = make_cudaPitchedPtr(%s, %s, %s, %s)"
-                % (src_ptr, src_pitch, src_pitch, src_y)
-            ),
-            c.Statement("copy_params.srcPos = %s" % src_pos),
-            c.Statement(
-                "copy_params.dstPtr = make_cudaPitchedPtr(%s, %s, %s, %s)"
-                % (dst_ptr, dst_pitch, dst_pitch, dst_y)
-            ),
-            c.Statement("copy_params.dstPos = %s" % dst_pos),
-            c.Statement("copy_params.extent = %s" % extent),
-            c.Statement("copy_params.kind = cudaMemcpyDeviceToDevice"),
-
-            c.Statement(
-                "CudaChecked(cudaMemcpy3DAsync(&copy_params, %s))"
-                % ccode(KernelStream())
-            ),
-            # c.Statement("CudaChecked(cudaDeviceSynchronize())"),
-            c.Statement("return 0"),
-        ]
-
-        parameters = (
-            [buf] + list(buf.shape) + [f] + f_offsets + [KernelStream()]
-        )
-
-        return Callable(name, List(body=ops), "int", parameters, ("static",))
 
 
 mpi_registry = {
@@ -1419,9 +1384,13 @@ class HaloUpdateList(MPIList):
 class HaloWaitList(MPIList):
     pass
 
+class NcclHaloUpdateList(MPIList):
+    pass
+
+class NcclHaloWaitList(MPIList):
+    pass
 
 # Types sub-hierarchy
-
 
 class MPIStatusObject(LocalObject):
     dtype = type("MPI_Status", (c_void_p,), {})

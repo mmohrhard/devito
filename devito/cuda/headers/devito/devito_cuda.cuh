@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
 #ifndef OPERATOR_STANDALONE
@@ -110,9 +111,9 @@ inline void critical(const std::string &format, Args... args) {
   log(LogLevel::CRITICAL, format, std::forward<Args>(args)...);
 }
 
-#define Checked(f)                                                             \
+#define Checked(...)                                                           \
   {                                                                            \
-    auto _ret = (f);                                                           \
+    auto _ret = (__VA_ARGS__);                                                 \
     if (_ret != 0) {                                                           \
       return _ret;                                                             \
     }                                                                          \
@@ -176,10 +177,10 @@ inline void critical(const std::string &format, Args... args) {
   static ARRAYTYPE *NAME##_device[MAX_CUDA_DEVICES] = {0};                     \
   ARRAYTYPE *NAME = {0};
 
-#define PER_DEVICE_ARRAY_TEMP_GET(NAME, NBYTES)                                \
+#define PER_DEVICE_ARRAY_TEMP_GET(NAME, DTYPE, ...)                            \
   {                                                                            \
-    if (_allocTempArray(&NAME##_device[_cudaGetCurrentDevice()], NBYTES,       \
-                        STRINGIFY(NAME)) != 0)                                 \
+    if (_allocTempArray<DTYPE>(&NAME##_device[_cudaGetCurrentDevice()],        \
+                               STRINGIFY(NAME), {__VA_ARGS__}) != 0)           \
       return -1;                                                               \
     NAME = NAME##_device[_cudaGetCurrentDevice()];                             \
   }
@@ -308,18 +309,21 @@ inline void _cudaCheckKernelLaunch(dim3 grid, dim3 block, const char *file,
 template <typename T> int _freeTempArrayData(T *array) {
   CudaChecked(cudaFree(array->device_data));
   CudaChecked(cudaFreeHost(array->data));
+  CudaChecked(cudaFreeHost(array->size));
   return 0;
 }
 
 template <typename T> int _freeTempArray(T *array) {
   if (_freeTempArrayData(array) != 0)
     return -1;
+
   CudaChecked(cudaFreeHost(array));
   return 0;
 }
 
-template <typename T>
-inline int _allocTempArray(T **array_ptr, size_t nbytes, const char *name) {
+template <typename TData, typename T>
+inline int _allocTempArray(T **array_ptr, const char *name,
+                           std::initializer_list<int> dims) {
   int device = 0;
   CudaChecked(cudaGetDevice(&device));
 
@@ -329,6 +333,15 @@ inline int _allocTempArray(T **array_ptr, size_t nbytes, const char *name) {
   }
 
   T *array = *array_ptr;
+  array->element_size = sizeof(TData);
+  array->rank = dims.size();
+  size_t nbytes = array->element_size;
+  std::vector<int> dim_vec(dims);
+
+  for (auto d : dim_vec) {
+    nbytes *= (size_t)d;
+  }
+
   if (array->nbytes != nbytes) {
     debug("%sallocating %llu bytes for %s for temporary data on device %d",
           array->nbytes > 0 ? "re" : "", nbytes, name, device);
@@ -337,6 +350,11 @@ inline int _allocTempArray(T **array_ptr, size_t nbytes, const char *name) {
     CudaChecked(cudaMallocHost((void **)(&array->data), nbytes));
     CudaChecked(cudaMalloc((void **)(&array->device_data), nbytes));
     CudaChecked(cudaMemset(array->device_data, 0, nbytes));
+    CudaChecked(
+        cudaMallocHost((void **)(&array->size), sizeof(size_t) * array->rank));
+    for (int i = 0; i < array->rank; i++) {
+      array->size[i] = dim_vec[i];
+    }
     array->nbytes = nbytes;
   }
 
@@ -465,6 +483,14 @@ template <typename T> inline bool _cudaPtrIsDeviceAccessible(T *ptr) {
     CudaChecked(cudaMemcpyToSymbol(NAME, &tmp, sizeof(TYPE)));                 \
   }
 
+template <typename T> size_t nbytes(const T *const __restrict obj) {
+  size_t size = obj->element_size;
+  for (int i = 0; i < obj->rank; i++) {
+    size *= obj->size[i];
+  }
+  return size;
+}
+
 template <typename T>
 int transferDataObject(cudaMemcpyKind kind, T *obj, size_t size = 0,
                        bool cond = true, cudaStream_t stream = nullptr,
@@ -479,9 +505,15 @@ int transferDataObject(cudaMemcpyKind kind, T *obj, size_t size = 0,
     dst = (T *)obj->data;
   }
 
-  if (size > 0 && cond) {
-    debug("transferring %s %s (%lx -> %lx)", name,
-          kind == cudaMemcpyHostToDevice ? "H->D" : "D->H", src, dst);
+  if (size == 0) {
+    size = nbytes<T>(obj);
+  }
+
+  if (cond) {
+    if (name != nullptr) {
+      debug("transferring %s %s (%lx -> %lx)", name,
+            kind == cudaMemcpyHostToDevice ? "H->D" : "D->H", src, dst);
+    }
     if (stream != nullptr) {
       CudaChecked(cudaMemcpyAsync(dst, src, size, kind, stream));
     } else {
@@ -497,11 +529,16 @@ int transferDataObject(cudaMemcpyKind kind, T *obj, size_t size = 0,
                      __VA_ARGS__)
 template <typename T>
 int _prepareDataObject(T *obj, const char *name, const char *nvtxRange,
-                       size_t size, bool copyIn = true,
+                       size_t size = 0, bool copyIn = true,
                        cudaStream_t stream = nullptr) {
   nvtxRangePush(nvtxRange);
   int device = 0;
   int ret = 0;
+
+  if (size == 0) {
+    size = nbytes<T>(obj);
+  }
+
   CudaChecked(cudaGetDevice(&device));
   if (!_cudaPtrIsManaged(obj->data)) {
     if (obj->device_data == nullptr) {
@@ -553,7 +590,8 @@ int _destroyDataObject(T *obj, const char *name, bool del = true,
 }
 
 using tuned_kernel = std::pair<dim3, dim3>;
-typedef std::map<std::shared_ptr<jitify::detail::CUDAKernel>, tuned_kernel> tuningDict;
+typedef std::map<std::shared_ptr<jitify::detail::CUDAKernel>, tuned_kernel>
+    tuningDict;
 
 static inline int dim3_get(const dim3 &d, int rank) {
   if (rank == 0)
@@ -659,7 +697,8 @@ _check_kernel(const dim3 &block, const dim3 &sub_block,
 
   debug("trying with block size (%d, %d, %d)..", block.x, block.y, block.z);
 
-  CUresult res = cuOccupancyMaxPotentialBlockSize(&grid, &max_block, k, nullptr, 0, 0);
+  CUresult res =
+      cuOccupancyMaxPotentialBlockSize(&grid, &max_block, k, nullptr, 0, 0);
   if (res == 0) {
 
     if (cuFuncGetAttribute(&regs, CU_FUNC_ATTRIBUTE_NUM_REGS, k) != 0)
@@ -943,3 +982,295 @@ static bool exceptionOccured() {
   return false;
 #endif
 }
+
+template <typename TDataobj>
+static int devito_cuda_async_gather_4d(float *__restrict buf, TDataobj dataobj,
+                                       const int x_sz, const int y_sz,
+                                       const int z_sz, const int w_ofs,
+                                       const int x_ofs, const int y_ofs,
+                                       const int z_ofs, cudaStream_t stream) {
+  struct cudaMemcpy3DParms copy_params = {0};
+  assert(dataobj->rank == 4);
+
+  int rank = dataobj->rank;
+  size_t pitch = dataobj->size[rank - 1] * sizeof(float);
+  size_t row_size = dataobj->size[rank - 1] * sizeof(float);
+  size_t ptr_offset = w_ofs * dataobj->size[rank - 3] *
+                      dataobj->size[rank - 2] * dataobj->size[rank - 1];
+
+  copy_params.srcPtr =
+      make_cudaPitchedPtr(((float *)(dataobj->device_data)) + ptr_offset, pitch,
+                          row_size, dataobj->size[rank - 2]);
+  copy_params.srcPos = make_cudaPos(sizeof(float) * (z_ofs), (y_ofs), (x_ofs));
+  copy_params.dstPtr = make_cudaPitchedPtr(buf, sizeof(float) * (z_sz),
+                                           sizeof(float) * (z_sz), y_sz);
+  copy_params.dstPos = make_cudaPos(sizeof(float) * (0), (0), (0));
+  copy_params.extent = make_cudaExtent(sizeof(float) * (z_sz), y_sz, x_sz);
+  copy_params.kind = cudaMemcpyDeviceToDevice;
+  CudaChecked(cudaMemcpy3DAsync(&copy_params, stream));
+  return cudaSuccess;
+}
+
+template <typename TDataobj>
+static int devito_cuda_async_scatter_4d(TDataobj dataobj,
+                                        const float *const __restrict buf,
+                                        const int x_sz, const int y_sz,
+                                        const int z_sz, const int w_ofs,
+                                        const int x_ofs, const int y_ofs,
+                                        const int z_ofs, cudaStream_t stream) {
+  struct cudaMemcpy3DParms copy_params = {0};
+  assert(dataobj->rank == 4);
+  int rank = dataobj->rank;
+  size_t pitch = dataobj->size[rank - 1] * sizeof(float);
+  size_t row_size = dataobj->size[rank - 1] * sizeof(float);
+  size_t ptr_offset = w_ofs * dataobj->size[rank - 3] *
+                      dataobj->size[rank - 2] * dataobj->size[rank - 1];
+  copy_params.dstPtr =
+      make_cudaPitchedPtr(((float *)(dataobj->device_data)) + ptr_offset, pitch,
+                          row_size, dataobj->size[rank - 2]);
+  copy_params.dstPos = make_cudaPos(sizeof(float) * (z_ofs), (y_ofs), (x_ofs));
+  copy_params.srcPtr = make_cudaPitchedPtr((float *)buf, sizeof(float) * (z_sz),
+                                           sizeof(float) * (z_sz), y_sz);
+  copy_params.srcPos = make_cudaPos(sizeof(float) * (0), (0), (0));
+  copy_params.extent = make_cudaExtent(sizeof(float) * (z_sz), y_sz, x_sz);
+  copy_params.kind = cudaMemcpyDeviceToDevice;
+  CudaChecked(cudaMemcpy3DAsync(&copy_params, stream));
+  return cudaSuccess;
+}
+
+// Multi-function halo update using NCCL
+//
+// Basically just exists to avoid Devito spitting out a ton of nearly
+// identical halo exchange functions.
+//
+// That, and we can do C++-y things more easily in a C++ header than in
+// Devito's AST/IR format.
+//
+template <typename TDataobj, typename TMPIMsg>
+static int devito_cuda_async_multi_haloupdate(
+    std::initializer_list<TDataobj> functions,
+    std::initializer_list<TMPIMsg> msgs, int otime, int ncomms,
+    cudaStream_t nccl_stream, cudaStream_t kernel_stream,
+    ncclComm_t nccl_comm) {
+  assert(functions.size() == msgs.size());
+  cudaEvent_t update_ev = nullptr;
+  CudaChecked(cudaEventCreateWithFlags(&update_ev, cudaEventDisableTiming));
+  for (ptrdiff_t i = 0; i < ncomms; i++) {
+    for (ptrdiff_t f = 0; f < functions.size(); f++) {
+      auto &msg = *(msgs.begin() + f);
+      auto &function = *(functions.begin() + f);
+      if (msg[i].torank != MPI_PROC_NULL) {
+        Checked(devito_cuda_async_gather_4d<TDataobj>(
+            (float *)msg[i].bufg, function, msg[i].sizes[0], msg[i].sizes[1],
+            msg[i].sizes[2], otime, msg[i].ofsg[0], msg[i].ofsg[1],
+            msg[i].ofsg[2], kernel_stream));
+      }
+    }
+  }
+
+  CudaChecked(cudaEventRecord(update_ev, kernel_stream));
+  CudaChecked(cudaStreamWaitEvent(nccl_stream, update_ev, 0));
+  CudaChecked(cudaEventDestroy(update_ev));
+  NcclChecked(ncclGroupStart());
+  for (ptrdiff_t i = 0; i < ncomms; i++) {
+    for (ptrdiff_t f = 0; f < functions.size(); f++) {
+      auto &msg = *(msgs.begin() + f);
+      if (msg[i].fromrank != MPI_PROC_NULL) {
+        NcclChecked(ncclRecv(
+            msg[i].bufs, msg[i].sizes[0] * msg[i].sizes[1] * msg[i].sizes[2],
+            ncclFloat32, msg[i].fromrank, nccl_comm, nccl_stream));
+      }
+
+      if (msg[i].torank != MPI_PROC_NULL) {
+        NcclChecked(ncclSend(
+            msg[i].bufg, msg[i].sizes[0] * msg[i].sizes[1] * msg[i].sizes[2],
+            ncclFloat32, msg[i].torank, nccl_comm, nccl_stream));
+      }
+    }
+  }
+  NcclChecked(ncclGroupEnd());
+  return 0;
+}
+
+template <typename TDataobj, typename TMPIMsg>
+static int
+devito_cuda_async_multi_halowait(std::initializer_list<TDataobj> functions,
+                                 std::initializer_list<TMPIMsg> msgs, int otime,
+                                 int ncomms, cudaStream_t nccl_stream,
+                                 cudaStream_t kernel_stream,
+                                 ncclComm_t nccl_comm) {
+  assert(functions.size() == msgs.size());
+  cudaEvent_t update_ev = nullptr;
+  CudaChecked(cudaEventCreateWithFlags(&update_ev, cudaEventDisableTiming));
+  CudaChecked(cudaEventRecord(update_ev, nccl_stream));
+  CudaChecked(cudaStreamWaitEvent(kernel_stream, update_ev));
+
+  for (ptrdiff_t i = 0; i < ncomms; i++) {
+    for (ptrdiff_t f = 0; f < functions.size(); f++) {
+      auto &msg = *(msgs.begin() + f);
+      auto &function = *(functions.begin() + f);
+      if (msg[i].fromrank != MPI_PROC_NULL) {
+        Checked(devito_cuda_async_scatter_4d<TDataobj>(
+            function, (float *)msg[i].bufg, msg[i].sizes[0], msg[i].sizes[1],
+            msg[i].sizes[2], otime, msg[i].ofsg[0], msg[i].ofsg[1],
+            msg[i].ofsg[2], kernel_stream));
+      }
+    }
+  }
+
+  return 0;
+}
+
+namespace pair_iterators {
+template <typename T1, typename T2>
+std::pair<T1, T2> operator++(std::pair<T1, T2> &it) {
+  ++it.first;
+  ++it.second;
+  return it;
+}
+} // namespace pair_iterators
+
+template <typename TDataobj>
+static int
+devito_cuda_async_d2h_destroy_many(std::initializer_list<TDataobj> dataobjs,
+                                   std::initializer_list<char *> names,
+                                   bool devicerm, bool updatehost,
+                                   cudaStream_t stream) {
+  assert(dataobjs.size() == names.size());
+  for (auto its = std::make_pair(dataobjs.begin(), names.begin()),
+            end = std::make_pair(dataobjs.end(), names.end());
+       its != end; ++its) {
+    if (transferDataObject(cudaMemcpyDeviceToHost, *(its.first), 0, updatehost,
+                           stream, *(its.second)) < 0 ||
+        _destroyDataObject(*(its.first), *(its.second), devicerm, stream) < 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+template <typename TDataobj>
+static int
+devito_cuda_async_h2d_prepare_many(std::initializer_list<TDataobj> dataobjs,
+                                   std::initializer_list<char *> names,
+                                   bool devicecreate, bool updatedevice,
+                                   cudaStream_t stream) {
+  assert(dataobjs.size() == names.size());
+  char nvtxRange[256];
+  for (auto its = std::make_pair(dataobjs.begin(), names.begin()),
+            end = std::make_pair(dataobjs.end(), names.end());
+       its != end; ++its) {
+    memset(nvtxRange, 0, 256);
+    snprintf(nvtxRange, 256, "prepareDataObject(%s)", *(its.second));
+    if (_prepareDataObject(*(its.first), *(its.second), nvtxRange, 0,
+                           devicecreate || updatedevice, stream) < 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+class CudaSectionTimer {
+public:
+  CudaSectionTimer(cudaStream_t stream, double *section_ptr)
+      : _stream(stream), _section_ptr(section_ptr), _start_event(nullptr),
+        _end_event(nullptr) {}
+
+  void start() {
+    if (_start_event) {
+      return;
+    }
+    cudaEventCreate(&_start_event);
+    cudaEventRecord(_start_event, _stream);
+  }
+
+  void stop() {
+    cudaEventCreate(&_end_event);
+    cudaEventRecord(_end_event, _stream);
+  }
+
+  ~CudaSectionTimer() {
+    if (_start_event) {
+      cudaEventDestroy(_start_event);
+      _start_event = nullptr;
+    }
+    if (_end_event) {
+      cudaEventDestroy(_end_event);
+      _end_event = nullptr;
+    }
+  }
+
+  void resolve() {
+    if (_start_event == nullptr) {
+      return;
+    }
+
+    if (_end_event == nullptr) {
+      debug("CudaSectionTimer: stop() was not called, possible codegen bug");
+      return;
+    }
+    cudaEventSynchronize(_end_event);
+
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, _start_event, _end_event);
+
+    *_section_ptr +=
+        static_cast<double>(milliseconds) / 1000.0; // Convert to seconds
+
+    cudaEventDestroy(_start_event);
+    cudaEventDestroy(_end_event);
+    _start_event = nullptr;
+    _end_event = nullptr;
+  }
+
+private:
+  cudaStream_t _stream;
+  double *_section_ptr;
+  cudaEvent_t _start_event;
+  cudaEvent_t _end_event;
+};
+
+class CudaSectionTimers {
+public:
+  CudaSectionTimers(cudaStream_t timer_stream) : _timer_stream(timer_stream) {
+    // This should probably be enough - normally we target a few thousand time
+    // steps at most, and large elastic operators may have 30-50 sections.
+    _timers.reserve(131072);
+  }
+
+  ~CudaSectionTimers() { _timers.clear(); }
+
+  CudaSectionTimer &startNewTimer(double *section_ptr) {
+    _timers.emplace_back(_timer_stream, section_ptr);
+    _timers.back().start();
+    return _timers.back();
+  }
+
+  void resolveTimers() {
+    for (auto &timer : _timers) {
+      timer.resolve();
+    }
+  }
+
+private:
+  std::vector<CudaSectionTimer> _timers;
+  cudaStream_t _timer_stream;
+};
+
+#define DEVITO_CUDA_PROLOGUE()                                                 \
+  CudaSectionTimers _cuda_section_timers(kernel_stream);                       \
+  nvtxRangePush(__FUNCTION__);
+
+#define CUDA_START_TIMER(T, S)                                                 \
+  auto &_timer_##S = _cuda_section_timers.startNewTimer(&(T->S));
+
+#define CUDA_STOP_TIMER(ST) _timer_##ST.stop();
+
+#define DEVITO_CUDA_EPILOGUE()                                                 \
+  do {                                                                         \
+    _cuda_section_timers.resolveTimers();                                      \
+    if (devicerm || updatehost) {                                              \
+      CudaChecked(cudaStreamSynchronize(kernel_stream));                       \
+      nvtxRangePop();                                                          \
+    }                                                                          \
+  } while (0);

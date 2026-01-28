@@ -144,6 +144,15 @@ class DeviceCustomCudaOperator(
             "topofuse": lambda i: fuse(i, toposort=True, options=options),
         }
 
+    @classmethod
+    def _lower_iet(cls, uiet, profiler=None, **kwargs):
+        from devito.cuda.passes import apply_cuda_timing
+
+        iet, byproduct = super()._lower_iet(uiet, profiler=profiler, **kwargs)
+        iet = apply_cuda_timing(iet)
+
+        return iet, byproduct
+
     _known_passes = (
         # DSL
         "collect-derivs",

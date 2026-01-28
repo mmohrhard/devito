@@ -783,6 +783,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     _C_field_halo_ofs = 'hofs'
     _C_field_owned_ofs = 'oofs'
     _C_field_dmap = 'dmap'
+    _C_field_rank = 'rank'
+    _C_field_element_size = 'element_size'
 
     _C_ctype = POINTER(type(_C_structname, (Structure,),
                             {'_fields_': [(_C_field_data, c_restrict_void_p),
@@ -795,7 +797,9 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                                           (_C_field_halo_size, POINTER(c_int)),
                                           (_C_field_halo_ofs, POINTER(c_int)),
                                           (_C_field_owned_ofs, POINTER(c_int)),
-                                          (_C_field_dmap, c_void_p)]}))
+                                          (_C_field_dmap, c_void_p),
+                                          (_C_field_rank, c_int),
+                                          (_C_field_element_size, c_int)]}))
 
     def _C_make_dataobj(self, data, device_data=None):
         """
@@ -818,6 +822,8 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
 
         # Fields used only within C-land
         dataobj._obj.dmap = c_void_p(0)
+        dataobj._obj.rank = len(data.shape)
+        dataobj._obj.element_size = np.dtype(self.dtype).itemsize
 
         # stash a reference to the array on _obj, so we don't let it get freed
         # while we hold onto _obj

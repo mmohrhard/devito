@@ -14,7 +14,7 @@ from sympy import IndexedBase
 from devito.exceptions import VisitorException
 from devito.ir.iet.nodes import (Node, Iteration, Expression, ExpressionBundle,
                                  Call, Lambda, BlankLine, Section, AddressOf,
-                                 CLiteral, List)
+                                 CLiteral, List, BraceInitializedList)
 from devito.ir.equations import OpInc
 from devito.ir.support.space import Backward
 from devito.symbolics import ccode, uxreplace, CondAnd
@@ -199,7 +199,7 @@ class CGen(Visitor):
             try:
                 if isinstance(i, Call):
                     ret.append(self._visit(i, nested_call=True))
-                elif isinstance(i, Lambda):
+                elif isinstance(i, (Lambda, BraceInitializedList)):
                     ret.append(self._visit(i))
                 elif isinstance(i, AddressOf):
                     ret.append('&%s' % (i.child._C_name))
@@ -520,6 +520,9 @@ class CGen(Visitor):
     def visit_HaloSpot(self, o):
         body = flatten(self._visit(i) for i in o.children)
         return c.Collection(body)
+
+    def visit_BraceInitializedList(self, o):
+        return "{" + ", ".join(flatten(self._args_call(o.elements))) + "}"
 
     # Operator-handle machinery
 

@@ -1,4 +1,5 @@
 import ctypes as c
+import cgen
 from enum import Enum
 
 from cached_property import cached_property
@@ -17,6 +18,7 @@ from devito.ir.iet.nodes import (
     Expression,
     ExprStmt,
     Global,
+    List,
     Node,
     Transfer,
 )
@@ -698,3 +700,41 @@ class CudaHostFuncLaunchCall(Call):
 
 class CudaHostFuncCallable(AsyncCallable):
     pass
+
+
+class CudaTimedList(List):
+
+    """
+    Wrap a Node with CUDA event-based timers.
+
+    Parameters
+    ----------
+    timer : Timer
+        The Timer used by the CudaTimedList.
+    lname : str
+        A unique name for the timed code block.
+    body : Node or list of Node
+        The CudaTimedList body.
+    """
+
+    def __init__(self, timer, lname, body):
+        self._name = lname
+        self._timer = timer
+
+        super().__init__(
+            header=cgen.Line("CUDA_START_TIMER(%s, %s)" % (timer.name, lname)),
+            body=body,
+            footer=cgen.Line("CUDA_STOP_TIMER(%s)" % (lname)),
+        )
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def timer(self):
+        return self._timer
+
+    @property
+    def functions(self):
+        return (self.timer,)

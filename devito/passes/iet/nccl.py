@@ -332,8 +332,11 @@ def make_nccl(iet, mpimode=None, **kwargs):
     sync_heb = HaloExchangeBuilder("basic", generators, **kwargs)
     user_heb = HaloExchangeBuilder(mpimode, generators, **kwargs)
     mapper = {}
+    seen_schemes = []
     for hs in FindNodes(HaloSpot).visit(iet):
         heb = user_heb if isinstance(hs, OverlappableHaloSpot) else sync_heb
+        # if hs.halo_scheme not in seen_schemes:
+        #     seen_schemes.append(hs.halo_scheme)
         mapper[hs] = heb.make(hs)
 
     efuncs = sync_heb.efuncs + user_heb.efuncs
@@ -374,8 +377,7 @@ def ncclize(graph, **kwargs):
     """
     options = kwargs["options"]
 
-    if options["optcomms"]:
-        optimize_halospots(graph)
+    # optimize_halospots(graph)
 
     mpimode = options["mpi"]
     if mpimode:

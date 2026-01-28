@@ -133,15 +133,16 @@ class DeviceCudaDataManager(DataManager):
         Allocate a mapped Array in the host high bandwidth memory.
         """
 
-        nbytes_arg = SizeOf(obj.indexed._C_typedata) * obj.size
-
         alloc = List(
             body=[
                 Call(
                     "PER_DEVICE_ARRAY_TEMP_DECLARE",
                     (obj._C_symbol, ReservedWord(obj._C_typedata)),
                 ),
-                Call("PER_DEVICE_ARRAY_TEMP_GET", (obj._C_symbol, nbytes_arg)),
+                Call(
+                    "PER_DEVICE_ARRAY_TEMP_GET",
+                    (obj._C_symbol, ReservedWord(obj.indexed._C_typedata), *obj.shape),
+                ),
             ]
         )
 
@@ -448,6 +449,8 @@ class DeviceCudaDataManager(DataManager):
         """
         mapper = self.derive_transfers(graph)
         self.place_transfers(graph, mapper=mapper)
+        # TODO: coalesce transfers
+
         self.place_definitions(graph)
         cast_mapper = self.derive_cuda_casts(graph)
         cast_mapper = flatten_dict(cast_mapper, prefix=None)
