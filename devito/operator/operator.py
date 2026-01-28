@@ -487,6 +487,9 @@ class Operator(Callable):
     def reads(self):
         return tuple(self._reads)
 
+    # Arguments known to Devito
+    _known_internal_arguments = ('allocator', )
+
     def _prepare_arguments(self, autotune=None, **kwargs):
         """
         Process runtime arguments passed to ``.apply()` and derive
@@ -495,7 +498,7 @@ class Operator(Callable):
         # Sanity check -- all user-provided keywords must be known to the Operator
         if not configuration['ignore-unknowns']:
             for k, v in kwargs.items():
-                if k not in self._known_arguments and k != "allocator":
+                if k not in self._known_arguments and k not in self._known_internal_arguments:
                     raise ValueError("Unrecognized argument %s=%s" % (k, v))
 
         overrides, defaults = split(self.input, lambda p: p.name in kwargs)
@@ -560,6 +563,12 @@ class Operator(Callable):
         # An ArgumentsMap carries additional metadata that may be used by
         # the subsequent phases of the arguments processing
         args = kwargs['args'] = ArgumentsMap(args, grid, self)
+
+        # Override the allocator if a different one has been provided
+        # (eg. for device allocations, we may invoke the Operator on multiple devices
+        # and pass a different device allocator each time)
+        if 'allocator' in kwargs:
+            args.allocator = kwargs['allocator']
 
         # Process Dimensions
         # A topological sorting is used so that derived Dimensions are processed after
