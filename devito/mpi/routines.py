@@ -1404,6 +1404,7 @@ class MPIMsg(CompositeObject):
     _C_field_bufs = "bufs"
     _C_field_bufg = "bufg"
     _C_field_sizes = "sizes"
+    _C_field_nsizes = "nsizes"
     _C_field_rrecv = "rrecv"
     _C_field_rsend = "rsend"
 
@@ -1416,6 +1417,7 @@ class MPIMsg(CompositeObject):
         (_C_field_bufs, c_void_p),
         (_C_field_bufg, c_void_p),
         (_C_field_sizes, POINTER(c_int)),
+        (_C_field_nsizes, c_int),
         (_C_field_rrecv, c_mpirequest_p),
         (_C_field_rsend, c_mpirequest_p),
     ]
@@ -1481,7 +1483,7 @@ class MPIMsg(CompositeObject):
                     assert side == CENTER
                     shape.append(target._size_domain[dim])
             entry.sizes = (c_int * len(shape))(*shape)
-
+            entry.nsizes = len(shape)
             # Allocate the send/recv buffers
             size = reduce(mul, shape)
             ctype = dtype_to_ctype(target.dtype)
