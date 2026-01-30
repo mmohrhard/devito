@@ -58,7 +58,7 @@ class NcclCommunicator:
 
             # We can't use NCCL if CUDA doesn't load properly
             ret, devcount = cuDeviceGetCount()
-            if ret != CUresult.CUDA_SUCCESS:
+            if ret != CUresult.CUDA_SUCCESS or devcount == 0:
                 cls.nccl_lib = None
                 return
 
