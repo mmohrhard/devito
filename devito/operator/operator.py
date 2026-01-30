@@ -900,9 +900,13 @@ class Operator(Callable):
         else:
             indent = ""
 
+        local_rank = args.comm.rank
+
         # Emit local, i.e. "per-rank" performance. Without MPI, this is the only
         # thing that will be emitted
         for k, v in summary.items():
+            if k.rank is not None and k.rank != local_rank:
+                continue
             rank = "[rank%d]" % k.rank if k.rank is not None else ""
             oi = "OI=%.2f" % fround(v.oi)
             gflopss = "%.2f GFlops/s" % fround(v.gflopss)
