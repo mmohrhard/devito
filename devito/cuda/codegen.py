@@ -320,8 +320,6 @@ class CudaCGen(CGen):
                         )
                     )
                     efuncs.extend(flatten([self._visit(i.root), blankline]))
-            # print("\n\n" + i.root.name + ":")
-            # print(str(i.root.body))
 
         # Definitions
         headers = [c.Define(*i) for i in o._headers] + [blankline]
