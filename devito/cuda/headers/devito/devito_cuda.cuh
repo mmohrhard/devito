@@ -387,14 +387,15 @@ inline int _launchKernel(const char *file, int line, const char *kname,
       (int)(fmaxf(1,
                   ceil((float)(maxs.z - offsets.z) / (float)(block_sizes.z)))));
 
-  if (grid.x >= 1 && grid.y >= 1 && grid.z >= 1) {
-    // printf("%s: grid(%d, %d, %d), threads(%d, %d, %d), min=(%d, %d, %d),
-    // max=(%d, %d, %d)\n", kname, grid.x, grid.y, grid.z, threads.x, threads.y,
-    // threads.z, mins.x, mins.y, mins.z, maxs.x, maxs.y, maxs.z);
-    _cudaChecked(
-        (cudaError_t)(kernel.configure(grid, tb, 0, stream)
-                          .launch(offsets, std::forward<Args>(args)...)),
-        file, line);
+  if (grid.x >= 1 && grid.y >= 1 && grid.z >= 1 &&
+      (maxs.x - mins.x > 0) && (maxs.y - mins.y > 0) &&
+      (maxs.z - mins.z > 0)) {
+    if (!_cudaChecked(
+            (cudaError_t)(kernel.configure(grid, tb, 0, stream)
+                              .launch(offsets, std::forward<Args>(args)...)),
+            file, line)) {
+      return -1;
+    }
   }
 
   return 0;
@@ -475,6 +476,16 @@ template <typename T> inline bool _cudaPtrIsDeviceAccessible(T *ptr) {
   struct cudaPointerAttributes attr = cudaPointerAttributes{};
   auto ret = cudaPointerGetAttributes(&attr, (const void *)ptr);
   return ret == cudaSuccess && attr.devicePointer != NULL;
+}
+
+template <typename T> inline bool _cudaPtrIsDevicePtr(T *ptr) {
+  if (ptr == nullptr)
+    return false;
+
+  struct cudaPointerAttributes attr = cudaPointerAttributes{};
+  auto ret = cudaPointerGetAttributes(&attr, (const void *)ptr);
+  return ret == cudaSuccess &&
+         attr.type == cudaMemoryType::cudaMemoryTypeDevice;
 }
 
 #define _setCudaConstant(TYPE, NAME, VAL)                                      \
@@ -983,6 +994,24 @@ static bool exceptionOccured() {
 #endif
 }
 
+template <typename T> inline char *_cudaPtrOwnerString(T *ptr) {
+  struct cudaPointerAttributes attr = cudaPointerAttributes{};
+  int ret = cudaPointerGetAttributes(&attr, (const void *)ptr);
+  if (ret != cudaSuccess) {
+    return (char *)"Failed";
+  } else if (attr.type == cudaMemoryType::cudaMemoryTypeDevice) {
+    return (char *)"Device";
+  } else if (attr.type == cudaMemoryType::cudaMemoryTypeHost) {
+    return (char *)"Host";
+  } else if (attr.type == cudaMemoryType::cudaMemoryTypeManaged) {
+    return (char *)"Managed";
+  } else if (attr.type == cudaMemoryType::cudaMemoryTypeUnregistered) {
+    return (char *)"Unregistered Host Memory";
+  } else {
+    return (char *)"Unknown";
+  }
+}
+
 template <typename TDataobj>
 static int devito_cuda_async_gather_4d(float *__restrict buf, TDataobj dataobj,
                                        const int x_sz, const int y_sz,
@@ -990,22 +1019,57 @@ static int devito_cuda_async_gather_4d(float *__restrict buf, TDataobj dataobj,
                                        const int x_ofs, const int y_ofs,
                                        const int z_ofs, cudaStream_t stream) {
   struct cudaMemcpy3DParms copy_params = {0};
+  if (!_cudaPtrIsDevicePtr(dataobj->device_data)) {
+    critical("!!! devito_cuda_async_gather_4d: dataobj->device_data %p is not "
+             "a device pointer (is %s)",
+             dataobj->device_data, _cudaPtrOwnerString(dataobj->device_data));
+    return -1;
+  }
+  if (!_cudaPtrIsDevicePtr(buf)) {
+    debug("!!! devito_cuda_async_gather_4d: buf %p is not a device pointer (is "
+          "%s)",
+          buf, _cudaPtrOwnerString(buf));
+    return -1;
+  }
+
   assert(dataobj->rank == 4);
 
   int rank = dataobj->rank;
-  size_t pitch = dataobj->size[rank - 1] * sizeof(float);
-  size_t row_size = dataobj->size[rank - 1] * sizeof(float);
-  size_t ptr_offset = w_ofs * dataobj->size[rank - 3] *
+
+  size_t pitch = dataobj->size[rank - 1] * dataobj->element_size;
+  size_t row_size = dataobj->size[rank - 1] * dataobj->element_size;
+  size_t ptr_offset = dataobj->element_size * w_ofs * dataobj->size[rank - 3] *
                       dataobj->size[rank - 2] * dataobj->size[rank - 1];
 
+#ifdef DEVITO_CUDA_VERBOSE_GATHER_SCATTER
+  debug("gather_4d: buf=%p, dataobj=%p, x_sz=%d, y_sz=%d, z_sz=%d (%d bytes), "
+        "w_ofs=%d, "
+        "x_ofs=%d, y_ofs=%d, z_ofs=%d, stream=%p, element_size=%d",
+        buf, dataobj->device_data, x_sz, y_sz, z_sz,
+        dataobj->element_size * z_sz, w_ofs, x_ofs, y_ofs, z_ofs,
+        (void *)stream, dataobj->element_size);
+  debug("gather_4d: src pitch=%llu, row_size=%llu, ptr_offset=0x%llx", pitch,
+        row_size, ptr_offset);
+  debug("gather_4d: src ptr alignment=%llu",
+        1 << __builtin_ctzll(
+            (uintptr_t)(((char *)(dataobj->device_data)) + ptr_offset)));
+  debug("gather_4d: dst ptr alignment=%llu",
+        1 << __builtin_ctzll((uintptr_t)(buf)));
+  debug("gather_4d: dst pitch=%llu, row_size=%llu",
+        dataobj->element_size * (z_sz), dataobj->element_size * (z_sz));
+#endif
+
   copy_params.srcPtr =
-      make_cudaPitchedPtr(((float *)(dataobj->device_data)) + ptr_offset, pitch,
+      make_cudaPitchedPtr(((char *)(dataobj->device_data)) + ptr_offset, pitch,
                           row_size, dataobj->size[rank - 2]);
-  copy_params.srcPos = make_cudaPos(sizeof(float) * (z_ofs), (y_ofs), (x_ofs));
-  copy_params.dstPtr = make_cudaPitchedPtr(buf, sizeof(float) * (z_sz),
-                                           sizeof(float) * (z_sz), y_sz);
-  copy_params.dstPos = make_cudaPos(sizeof(float) * (0), (0), (0));
-  copy_params.extent = make_cudaExtent(sizeof(float) * (z_sz), y_sz, x_sz);
+  copy_params.srcPos =
+      make_cudaPos(dataobj->element_size * (z_ofs), (y_ofs), (x_ofs));
+  copy_params.dstPtr =
+      make_cudaPitchedPtr(buf, dataobj->element_size * (z_sz),
+                          dataobj->element_size * (z_sz), y_sz);
+  copy_params.dstPos = make_cudaPos(0, 0, 0);
+  copy_params.extent =
+      make_cudaExtent(dataobj->element_size * (z_sz), y_sz, x_sz);
   copy_params.kind = cudaMemcpyDeviceToDevice;
   CudaChecked(cudaMemcpy3DAsync(&copy_params, stream));
   return cudaSuccess;
@@ -1019,21 +1083,56 @@ static int devito_cuda_async_scatter_4d(TDataobj dataobj,
                                         const int x_ofs, const int y_ofs,
                                         const int z_ofs, cudaStream_t stream) {
   struct cudaMemcpy3DParms copy_params = {0};
+  if (!_cudaPtrIsDevicePtr(dataobj->device_data)) {
+    critical("!!! devito_cuda_async_scatter_4d: dataobj->device_data %p is not "
+             "a device pointer (is %s)",
+             dataobj->device_data, _cudaPtrOwnerString(dataobj->device_data));
+    return -1;
+  }
+  if (!_cudaPtrIsDevicePtr(buf)) {
+    debug("!!! devito_cuda_async_scatter_4d: buf %p is not a device pointer "
+          "(is %s)",
+          buf, _cudaPtrOwnerString(buf));
+    return -1;
+  }
+
   assert(dataobj->rank == 4);
   int rank = dataobj->rank;
-  size_t pitch = dataobj->size[rank - 1] * sizeof(float);
-  size_t row_size = dataobj->size[rank - 1] * sizeof(float);
-  size_t ptr_offset = w_ofs * dataobj->size[rank - 3] *
+  size_t pitch = dataobj->size[rank - 1] * dataobj->element_size;
+  size_t row_size = dataobj->size[rank - 1] * dataobj->element_size;
+  size_t ptr_offset = dataobj->element_size * w_ofs * dataobj->size[rank - 3] *
                       dataobj->size[rank - 2] * dataobj->size[rank - 1];
+
+#ifdef DEVITO_CUDA_VERBOSE_GATHER_SCATTER
+  debug("scatter_4d: buf=%p, dataobj=%p, x_sz=%d, y_sz=%d, z_sz=%d (%d bytes), "
+        "w_ofs=%d, "
+        "x_ofs=%d, y_ofs=%d, z_ofs=%d, stream=%p, element_size=%d",
+        buf, dataobj->device_data, x_sz, y_sz, z_sz,
+        dataobj->element_size * z_sz, w_ofs, x_ofs, y_ofs, z_ofs,
+        (void *)stream, dataobj->element_size);
+  debug("scatter_4d: src pitch=%llu, row_size=%llu, ptr_offset=0x%llx", pitch,
+        row_size, ptr_offset);
+  debug("scatter_4d: src ptr alignment=%llu",
+        1 << __builtin_ctzll(
+            (uintptr_t)(((char *)(dataobj->device_data)) + ptr_offset)));
+  debug("scatter_4d: dst ptr alignment=%llu",
+        1 << __builtin_ctzll((uintptr_t)(buf)));
+  debug("scatter_4d: dst pitch=%llu, row_size=%llu",
+        dataobj->element_size * (z_sz), dataobj->element_size * (z_sz));
+#endif
   copy_params.dstPtr =
-      make_cudaPitchedPtr(((float *)(dataobj->device_data)) + ptr_offset, pitch,
+      make_cudaPitchedPtr(((char *)(dataobj->device_data)) + ptr_offset, pitch,
                           row_size, dataobj->size[rank - 2]);
-  copy_params.dstPos = make_cudaPos(sizeof(float) * (z_ofs), (y_ofs), (x_ofs));
-  copy_params.srcPtr = make_cudaPitchedPtr((float *)buf, sizeof(float) * (z_sz),
-                                           sizeof(float) * (z_sz), y_sz);
-  copy_params.srcPos = make_cudaPos(sizeof(float) * (0), (0), (0));
-  copy_params.extent = make_cudaExtent(sizeof(float) * (z_sz), y_sz, x_sz);
+  copy_params.dstPos =
+      make_cudaPos(dataobj->element_size * (z_ofs), (y_ofs), (x_ofs));
+  copy_params.srcPtr =
+      make_cudaPitchedPtr((char *)buf, dataobj->element_size * (z_sz),
+                          dataobj->element_size * (z_sz), y_sz);
+  copy_params.srcPos = make_cudaPos(0, 0, 0);
+  copy_params.extent =
+      make_cudaExtent(dataobj->element_size * (z_sz), y_sz, x_sz);
   copy_params.kind = cudaMemcpyDeviceToDevice;
+
   CudaChecked(cudaMemcpy3DAsync(&copy_params, stream));
   return cudaSuccess;
 }
@@ -1055,11 +1154,19 @@ static int devito_cuda_async_multi_haloupdate(
   assert(functions.size() == msgs.size());
   cudaEvent_t update_ev = nullptr;
   CudaChecked(cudaEventCreateWithFlags(&update_ev, cudaEventDisableTiming));
+
   for (ptrdiff_t i = 0; i < ncomms; i++) {
     for (ptrdiff_t f = 0; f < functions.size(); f++) {
       auto &msg = *(msgs.begin() + f);
       auto &function = *(functions.begin() + f);
       if (msg[i].torank != MPI_PROC_NULL) {
+#ifdef DEVITO_CUDA_VERBOSE_GATHER_SCATTER
+        debug("halo update gather: func=%p, buf=%p, sizes=(%d,%d,%d), "
+              "otime=%d, ofs=(%d,%d,%d), stream=%p, nsizes=%d",
+              function, msg[i].bufg, msg[i].sizes[0], msg[i].sizes[1],
+              msg[i].sizes[2], otime, msg[i].ofsg[0], msg[i].ofsg[1],
+              msg[i].ofsg[2], (void *)kernel_stream, msg[i].nsizes);
+#endif
         Checked(devito_cuda_async_gather_4d<TDataobj>(
             (float *)msg[i].bufg, function, msg[i].sizes[0], msg[i].sizes[1],
             msg[i].sizes[2], otime, msg[i].ofsg[0], msg[i].ofsg[1],
@@ -1110,6 +1217,13 @@ devito_cuda_async_multi_halowait(std::initializer_list<TDataobj> functions,
       auto &msg = *(msgs.begin() + f);
       auto &function = *(functions.begin() + f);
       if (msg[i].fromrank != MPI_PROC_NULL) {
+#ifdef DEVITO_CUDA_VERBOSE_GATHER_SCATTER
+        debug("halo update scatter: func=%p, buf=%p, sizes=(%d,%d,%d), "
+              "otime=%d, ofs=(%d,%d,%d), stream=%p, nsizes=%d",
+              function, msg[i].bufg, msg[i].sizes[0], msg[i].sizes[1],
+              msg[i].sizes[2], otime, msg[i].ofsg[0], msg[i].ofsg[1],
+              msg[i].ofsg[2], (void *)kernel_stream, msg[i].nsizes);
+#endif
         Checked(devito_cuda_async_scatter_4d<TDataobj>(
             function, (float *)msg[i].bufg, msg[i].sizes[0], msg[i].sizes[1],
             msg[i].sizes[2], otime, msg[i].ofsg[0], msg[i].ofsg[1],
@@ -1247,6 +1361,7 @@ public:
   }
 
   void resolveTimers() {
+    debug("resolveTimers(): resolving %zu timers", _timers.size());
     for (auto &timer : _timers) {
       timer.resolve();
     }
