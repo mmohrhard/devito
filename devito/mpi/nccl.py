@@ -112,7 +112,7 @@ class NcclCommunicator:
 
         global_rank = comm.rank
 
-        split_comm = comm.Split(MPI.COMM_TYPE_SHARED, 0)
+        split_comm = comm.Split_type(MPI.COMM_TYPE_SHARED, 0)
         local_rank = split_comm.rank
 
         ret, gpu_count = cuDeviceGetCount()
