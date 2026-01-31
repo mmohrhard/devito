@@ -200,7 +200,6 @@ inline void critical(const std::string &format, Args... args) {
 
 #define ENSURE_STREAM_PRIO(NAME, PRIORITY)                                     \
   static cudaStream_t NAME##_devs[MAX_CUDA_DEVICES] = {0};                     \
-  /*[[maybe_unused]] cudaStream_t NAME = nullptr;*/                            \
   (void)NAME;                                                                  \
   {                                                                            \
     int device = _cudaGetCurrentDevice();                                      \
@@ -272,6 +271,9 @@ inline bool _cudaChecked(cudaError_t err, const char *file, int line,
 
 inline bool _ncclChecked(ncclResult_t err, const char *file, int line,
                          const char *extra = nullptr) {
+  // We may need this if we switch to fully-async NCCL, but I'm not sure
+  // what that actually buys us?
+  //
   // if (err == ncclInProgress) {
   //     ncclResult_t state = err;
   //     do {
@@ -360,7 +362,8 @@ inline int _allocTempArray(T **array_ptr, const char *name,
 
   return 0;
 }
-template <typename T> T round_down(T value, T factor) {}
+
+static inline int ceil_div(int x, int y) { return (x + y - 1) / y; }
 
 template <typename... Args>
 inline int _launchKernel(const char *file, int line, const char *kname,
@@ -373,27 +376,20 @@ inline int _launchKernel(const char *file, int line, const char *kname,
   dim3 block_sizes = dim3(threads.x * threads_sub.x, threads.y * threads_sub.y,
                           threads.z * threads_sub.z);
 
-  // Convert our minimum values to block-aligned offsets
-  dim3 offsets = dim3((mins.x / block_sizes.x) * block_sizes.x,
-                      (mins.y / block_sizes.y) * block_sizes.y,
-                      (mins.z / block_sizes.z) * block_sizes.z);
+  // Convert our minimum values to block-aligned minimums
+  dim3 block_min = dim3((mins.x / block_sizes.x) * block_sizes.x,
+                        (mins.y / block_sizes.y) * block_sizes.y,
+                        (mins.z / block_sizes.z) * block_sizes.z);
 
   // Resize the grid based on the block sizes and offsets
-  dim3 grid(
-      (int)(fmaxf(1.,
-                  ceil((float)(maxs.x - offsets.x) / (float)(block_sizes.x)))),
-      (int)(fmaxf(1.,
-                  ceil((float)(maxs.y - offsets.y) / (float)(block_sizes.y)))),
-      (int)(fmaxf(1,
-                  ceil((float)(maxs.z - offsets.z) / (float)(block_sizes.z)))));
+  dim3 grid(ceil_div(maxs.x - block_min.x, block_sizes.x),
+            ceil_div(maxs.y - block_min.y, block_sizes.y),
+            ceil_div(maxs.z - block_min.z, block_sizes.z));
 
-  if (grid.x >= 1 && grid.y >= 1 && grid.z >= 1 &&
-      (maxs.x - mins.x > 0) && (maxs.y - mins.y > 0) &&
-      (maxs.z - mins.z > 0)) {
-    if (!_cudaChecked(
-            (cudaError_t)(kernel.configure(grid, tb, 0, stream)
-                              .launch(offsets, std::forward<Args>(args)...)),
-            file, line)) {
+  if (grid.x >= 1 && grid.y >= 1 && grid.z >= 1) {
+    if (!_cudaChecked((cudaError_t)(kernel.configure(grid, tb, 0, stream)
+                                        .launch(block_min, std::forward<Args>(args)...)),
+                      file, line)) {
       return -1;
     }
   }
@@ -520,6 +516,9 @@ int transferDataObject(cudaMemcpyKind kind, T *obj, size_t size = 0,
     size = nbytes<T>(obj);
   }
 
+  if (size == 0) {
+    return 0; // Nothing to do
+  }
   if (cond) {
     if (name != nullptr) {
       debug("transferring %s %s (%lx -> %lx)", name,
@@ -553,9 +552,11 @@ int _prepareDataObject(T *obj, const char *name, const char *nvtxRange,
   CudaChecked(cudaGetDevice(&device));
   if (!_cudaPtrIsManaged(obj->data)) {
     if (obj->device_data == nullptr) {
-      debug("allocating %llu bytes for %s on device %d", size, name, device);
-      CudaChecked(cudaMallocAsync((void **)&obj->device_data, size, stream));
-      obj->operator_allocated = 1;
+      if (size > 0) {
+        debug("allocating %llu bytes for %s on device %d", size, name, device);
+        CudaChecked(cudaMallocAsync((void **)&obj->device_data, size, stream));
+        obj->operator_allocated = 1;
+      }
     } else {
       cudaPointerAttributes attrs = cudaPointerAttributes{};
       CudaChecked(cudaPointerGetAttributes(&attrs, obj->device_data));
@@ -576,8 +577,10 @@ int _prepareDataObject(T *obj, const char *name, const char *nvtxRange,
             attrs.device, device);
       }
     }
-    ret = transferDataObject(cudaMemcpyHostToDevice, obj, size, copyIn, stream,
-                             name);
+    if (size > 0) {
+      ret = transferDataObject(cudaMemcpyHostToDevice, obj, size, copyIn,
+                               stream, name);
+    }
   }
   nvtxRangePop();
   return ret;
@@ -591,7 +594,7 @@ int _prepareDataObject(T *obj, const char *name, const char *nvtxRange,
 template <typename T>
 int _destroyDataObject(T *obj, const char *name, bool del = true,
                        cudaStream_t stream = nullptr) {
-  if (del && obj->operator_allocated) {
+  if (del && obj->operator_allocated && obj->device_data != nullptr) {
     debug("freeing %s", name);
     CudaChecked(cudaFreeAsync(obj->device_data, stream));
     obj->device_data = nullptr;
@@ -1042,20 +1045,22 @@ static int devito_cuda_async_gather_4d(float *__restrict buf, TDataobj dataobj,
                       dataobj->size[rank - 2] * dataobj->size[rank - 1];
 
 #ifdef DEVITO_CUDA_VERBOSE_GATHER_SCATTER
-  debug("gather_4d: buf=%p, dataobj=%p, x_sz=%d, y_sz=%d, z_sz=%d (%d bytes), "
+  debug("devito_cuda_async_gather_4d: buf=%p, dataobj=%p, x_sz=%d, y_sz=%d, "
+        "z_sz=%d (%d bytes), "
         "w_ofs=%d, "
         "x_ofs=%d, y_ofs=%d, z_ofs=%d, stream=%p, element_size=%d",
         buf, dataobj->device_data, x_sz, y_sz, z_sz,
         dataobj->element_size * z_sz, w_ofs, x_ofs, y_ofs, z_ofs,
         (void *)stream, dataobj->element_size);
-  debug("gather_4d: src pitch=%llu, row_size=%llu, ptr_offset=0x%llx", pitch,
-        row_size, ptr_offset);
-  debug("gather_4d: src ptr alignment=%llu",
+  debug("devito_cuda_async_gather_4d: src pitch=%llu, row_size=%llu, "
+        "ptr_offset=0x%llx",
+        pitch, row_size, ptr_offset);
+  debug("devito_cuda_async_gather_4d: src ptr alignment=%llu",
         1 << __builtin_ctzll(
             (uintptr_t)(((char *)(dataobj->device_data)) + ptr_offset)));
-  debug("gather_4d: dst ptr alignment=%llu",
+  debug("devito_cuda_async_gather_4d: dst ptr alignment=%llu",
         1 << __builtin_ctzll((uintptr_t)(buf)));
-  debug("gather_4d: dst pitch=%llu, row_size=%llu",
+  debug("devito_cuda_async_gather_4d: dst pitch=%llu, row_size=%llu",
         dataobj->element_size * (z_sz), dataobj->element_size * (z_sz));
 #endif
 
@@ -1104,20 +1109,22 @@ static int devito_cuda_async_scatter_4d(TDataobj dataobj,
                       dataobj->size[rank - 2] * dataobj->size[rank - 1];
 
 #ifdef DEVITO_CUDA_VERBOSE_GATHER_SCATTER
-  debug("scatter_4d: buf=%p, dataobj=%p, x_sz=%d, y_sz=%d, z_sz=%d (%d bytes), "
+  debug("devito_cuda_async_scatter_4d: buf=%p, dataobj=%p, x_sz=%d, y_sz=%d, "
+        "z_sz=%d (%d bytes), "
         "w_ofs=%d, "
         "x_ofs=%d, y_ofs=%d, z_ofs=%d, stream=%p, element_size=%d",
         buf, dataobj->device_data, x_sz, y_sz, z_sz,
         dataobj->element_size * z_sz, w_ofs, x_ofs, y_ofs, z_ofs,
         (void *)stream, dataobj->element_size);
-  debug("scatter_4d: src pitch=%llu, row_size=%llu, ptr_offset=0x%llx", pitch,
-        row_size, ptr_offset);
-  debug("scatter_4d: src ptr alignment=%llu",
+  debug("devito_cuda_async_scatter_4d: src pitch=%llu, row_size=%llu, "
+        "ptr_offset=0x%llx",
+        pitch, row_size, ptr_offset);
+  debug("devito_cuda_async_scatter_4d: src ptr alignment=%llu",
         1 << __builtin_ctzll(
             (uintptr_t)(((char *)(dataobj->device_data)) + ptr_offset)));
-  debug("scatter_4d: dst ptr alignment=%llu",
+  debug("devito_cuda_async_scatter_4d: dst ptr alignment=%llu",
         1 << __builtin_ctzll((uintptr_t)(buf)));
-  debug("scatter_4d: dst pitch=%llu, row_size=%llu",
+  debug("devito_cuda_async_scatter_4d: dst pitch=%llu, row_size=%llu",
         dataobj->element_size * (z_sz), dataobj->element_size * (z_sz));
 #endif
   copy_params.dstPtr =
@@ -1136,6 +1143,9 @@ static int devito_cuda_async_scatter_4d(TDataobj dataobj,
   CudaChecked(cudaMemcpy3DAsync(&copy_params, stream));
   return cudaSuccess;
 }
+
+// MPI bits bloew
+#ifdef MPI_VERSION
 
 // Multi-function halo update using NCCL
 //
@@ -1161,7 +1171,8 @@ static int devito_cuda_async_multi_haloupdate(
       auto &function = *(functions.begin() + f);
       if (msg[i].torank != MPI_PROC_NULL) {
 #ifdef DEVITO_CUDA_VERBOSE_GATHER_SCATTER
-        debug("halo update gather: func=%p, buf=%p, sizes=(%d,%d,%d), "
+        debug("devito_cuda_async_multi_haloupdate: func=%p, buf=%p, "
+              "sizes=(%d,%d,%d), "
               "otime=%d, ofs=(%d,%d,%d), stream=%p, nsizes=%d",
               function, msg[i].bufg, msg[i].sizes[0], msg[i].sizes[1],
               msg[i].sizes[2], otime, msg[i].ofsg[0], msg[i].ofsg[1],
@@ -1218,7 +1229,8 @@ devito_cuda_async_multi_halowait(std::initializer_list<TDataobj> functions,
       auto &function = *(functions.begin() + f);
       if (msg[i].fromrank != MPI_PROC_NULL) {
 #ifdef DEVITO_CUDA_VERBOSE_GATHER_SCATTER
-        debug("halo update scatter: func=%p, buf=%p, sizes=(%d,%d,%d), "
+        debug("devito_cuda_async_multi_halowait: func=%p, buf=%p, "
+              "sizes=(%d,%d,%d), "
               "otime=%d, ofs=(%d,%d,%d), stream=%p, nsizes=%d",
               function, msg[i].bufg, msg[i].sizes[0], msg[i].sizes[1],
               msg[i].sizes[2], otime, msg[i].ofsg[0], msg[i].ofsg[1],
@@ -1234,6 +1246,8 @@ devito_cuda_async_multi_halowait(std::initializer_list<TDataobj> functions,
 
   return 0;
 }
+
+#endif // MPI_VERSION
 
 namespace pair_iterators {
 template <typename T1, typename T2>

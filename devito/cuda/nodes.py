@@ -67,7 +67,7 @@ class CudaCall(DeviceCall):
         args = as_tuple(
             flatten(
                 ([stream] if stream else [])
-                + list(arguments)
+                + ([arguments] if arguments else [])
                 + ([jit_instantiation] if jit_instantiation else [])
                 + ([tune] if tune else [])
             )

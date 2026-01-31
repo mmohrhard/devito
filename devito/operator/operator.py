@@ -900,7 +900,7 @@ class Operator(Callable):
         else:
             indent = ""
 
-        local_rank = args.comm.rank
+        local_rank = args.comm.rank if args.comm != MPI.COMM_NULL else None
 
         # Emit local, i.e. "per-rank" performance. Without MPI, this is the only
         # thing that will be emitted
