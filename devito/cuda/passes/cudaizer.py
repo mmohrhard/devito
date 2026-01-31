@@ -313,12 +313,12 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
             kernel.append(
                 c.Initializer(
                     c.Value("int", dim.name + ("_0" if has_sub_block else "")),
-                    "(blockIdx.%s + %s) * _block_%s %s+ %s"
+                    "(blockIdx.%s * _block_%s %s) + %s + %s"
                     % (
                         dim_vars[dv],
-                        "_offsets." + dim_vars[v],
                         dim_vars[dv],
                         (" * _sub_block_" + dim_vars[dv] + " " if has_sub_block else ""),
+                        "_offsets." + dim_vars[v],
                         l_idx,
                     ),
                 )

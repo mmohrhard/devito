@@ -1,5 +1,5 @@
 from collections import namedtuple
-from ctypes import POINTER, Structure, c_int, c_ulong, c_void_p, cast, byref, addressof
+from ctypes import POINTER, Structure, c_char_p, c_int, c_ulong, c_void_p, cast, byref, addressof
 from functools import wraps, reduce
 from math import ceil
 from operator import mul
@@ -784,6 +784,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
     _C_field_owned_ofs = 'oofs'
     _C_field_dmap = 'dmap'
     _C_field_rank = 'rank'
+    _C_field_name = 'name'
     _C_field_element_size = 'element_size'
 
     _C_ctype = POINTER(type(_C_structname, (Structure,),
@@ -799,6 +800,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
                                           (_C_field_owned_ofs, POINTER(c_int)),
                                           (_C_field_dmap, c_void_p),
                                           (_C_field_rank, c_int),
+                                          (_C_field_name, c_char_p),
                                           (_C_field_element_size, c_int)]}))
 
     def _C_make_dataobj(self, data, device_data=None):
@@ -823,6 +825,7 @@ class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
         # Fields used only within C-land
         dataobj._obj.dmap = c_void_p(0)
         dataobj._obj.rank = len(data.shape)
+        dataobj._obj.name = self.name.encode('utf-8')
         dataobj._obj.element_size = np.dtype(self.dtype).itemsize
 
         # stash a reference to the array on _obj, so we don't let it get freed

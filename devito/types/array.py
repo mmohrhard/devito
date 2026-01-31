@@ -1,4 +1,4 @@
-from ctypes import POINTER, Structure, c_int, c_void_p, c_ulong
+from ctypes import POINTER, Structure, c_char_p, c_int, c_void_p, c_ulong
 from math import ceil
 
 import numpy as np
@@ -229,6 +229,7 @@ class ArrayMapped(Array):
     _C_field_operator_allocated = 'operator_allocated'
     _C_field_size = 'size'
     _C_field_rank = 'rank'
+    _C_field_name = 'name'
     _C_field_element_size = 'element_size'
 
     _C_ctype = POINTER(type(_C_structname, (Structure,),
@@ -239,6 +240,7 @@ class ArrayMapped(Array):
                                           (_C_field_dmap, c_void_p),
                                           (_C_field_size, POINTER(c_ulong)),
                                           (_C_field_rank, c_int),
+                                          (_C_field_name, c_char_p),
                                           (_C_field_element_size, c_int)]}))
 
 

@@ -1163,7 +1163,7 @@ class MultilineCall(c.Generable):
                     processed.append(lines[0])
             else:
                 processed.append(str(i))
-        tip = tip + ",".join(processed)
+        tip = tip + ", ".join(processed)
         if not self.is_indirect:
             tip += ")"
         if not self.is_expr:

@@ -102,7 +102,8 @@ def kernel_tuning(graph: Graph, **kwargs):
                 ),
                 Definition(
                     params,
-                    initvalue='performTuning(_kernelTuning, "%s", %s, %s, %s, %d, %s);'
+                    initvalue="devito::cuda::performTuning(_kernelTuning"
+                    + ', "%s", %s, %s, %s, %d, %s);'
                     % (
                         call.name,
                         tuple_to_dim3(call.preferred_block),
