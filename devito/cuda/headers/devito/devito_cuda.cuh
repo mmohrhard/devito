@@ -51,6 +51,7 @@
 #include <devito/memory.hpp>
 #include <devito/mpi.hpp>
 #include <devito/profiling.hpp>
+#include <devito/types.hpp>
 
 /**
  * Thread-local temporary variable helpers

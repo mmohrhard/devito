@@ -53,31 +53,36 @@ template <typename T> inline bool _cudaPtrIsDevicePtr(T *ptr) {
     CudaChecked(cudaMemcpyToSymbol(NAME, &tmp, sizeof(TYPE)));                 \
   }
 
-static inline int dim3_get(const dim3 &d, int rank) {
-  if (rank == 0)
-    return d.x;
-  else if (rank == 1)
-    return d.y;
-  else if (rank == 2)
-    return d.z;
+#define SFINAE_FOR_MEMBER_CHECK(NAME, MEMBER)                                      \
+  template <typename T, typename = void> struct has_##NAME : std::false_type {}; \
+  template <typename T>                                                        \
+  struct has_##NAME<T, std::void_t<decltype(T::MEMBER)>>                    \
+      : std::true_type {};                                                    \
+  template <typename T> constexpr bool has_##NAME##_v = has_##NAME<T>::value;
 
-  assert(false);
-  return -1;
+// SFINAE to check for presence of host pointer member
+// (Devito Arrays and dataobjs are nearly-interchangeable
+// structs, but arrays don't have host pointers)
+SFINAE_FOR_MEMBER_CHECK(host_ptr, data)
+
+template <typename T>
+typename std::enable_if<has_host_ptr_v<T>, void *>::type
+select_ptr(T *obj, bool device) {
+  if (device) {
+    return obj->device_data;
+  } else {
+    return obj->data;
+  }
 }
 
-static void dim3_set(dim3 &d, int rank, int value) {
-  switch (rank) {
-  case 0:
-    d.x = value;
-    return;
-  case 1:
-    d.y = value;
-    return;
-  case 2:
-    d.z = value;
-    return;
-  default:
-    assert(false);
+template <typename T>
+typename std::enable_if<!has_host_ptr_v<T>, void *>::type
+select_ptr(T *obj, bool device) {
+  if (device) {
+    return obj->device_data;
+  } else {
+    // This should never happen, unless codegen has messed up
+    assert(false && "Object does not have host_data member");
   }
 }
 

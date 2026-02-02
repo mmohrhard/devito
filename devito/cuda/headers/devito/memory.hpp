@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cuda_runtime.h>
 
+#include <devito/types.hpp>
 #include <devito/errors.hpp>
 #include <devito/logging.hpp>
 #include <devito/util.hpp>
@@ -171,6 +172,8 @@ int _destroyDataObject(T *obj, const char *name, bool del = true,
 
   return 0;
 }
+
+/// Get a human-readable string describing the owner of a CUDA pointer
 template <typename T> inline static char *_cudaPtrOwnerString(T *ptr) {
   struct cudaPointerAttributes attr = cudaPointerAttributes{};
   int ret = cudaPointerGetAttributes(&attr, (const void *)ptr);
@@ -189,6 +192,8 @@ template <typename T> inline static char *_cudaPtrOwnerString(T *ptr) {
   }
 }
 
+/// Perform an asynchronous gather from a 4D data object into a contiguous
+/// buffer for MPI/NCCL interchange purposes
 template <typename TDataobj>
 static int async_gather_4d(void *__restrict buf, TDataobj dataobj,
                            const int x_sz, const int y_sz, const int z_sz,
@@ -254,6 +259,8 @@ static int async_gather_4d(void *__restrict buf, TDataobj dataobj,
   return cudaSuccess;
 }
 
+/// Perform an asynchronous scatter from a contiguous buffer into a 4D data
+/// object
 template <typename TDataobj>
 static int async_scatter_4d(TDataobj dataobj, const void *const __restrict buf,
                             const int x_sz, const int y_sz, const int z_sz,
@@ -317,61 +324,55 @@ static int async_scatter_4d(TDataobj dataobj, const void *const __restrict buf,
   return cudaSuccess;
 }
 
-template <typename T, typename = void> struct has_host_ptr : std::false_type {};
-template <typename T>
-struct has_host_ptr<T, std::void_t<decltype(T::data)>> : std::true_type {};
-template <typename T> constexpr bool has_host_ptr_v = has_host_ptr<T>::value;
 
-template <typename T>
-typename std::enable_if<has_host_ptr_v<T>, void *>::type
-select_ptr(T *obj, bool device) {
-  if (device) {
-    return obj->device_data;
-  } else {
-    return obj->data;
-  }
-}
 
-template <typename T>
-typename std::enable_if<!has_host_ptr_v<T>, void *>::type
-select_ptr(T *obj, bool device) {
-  if (device) {
-    return obj->device_data;
-  } else {
-    assert(false && "Object does not have host_data member");
-  }
-}
+/// Asynchronous savebuffer copy from device to host or vice versa
+///
+/// Eventually, we'll de inline compression/decompression in here
+/// as required.
 template <typename TSrc, typename TDst>
-static int async_buffer_copy_slice(TDst &dst, const TSrc &src, const int t_dst,
+static int async_buffer_copy_slice(TDst *dst, const TSrc *src, const int t_dst,
                                    const int t_src, cudaMemcpyKind kind,
-                                   cudaStream_t stream) {
+                                   cudaStream_t stream, dim4 src_offset = dim4(), dim4 dst_offset = dim4(), dim4 extent = dim4(0,0,0,0)) {
   // Copy a single time slice of 3D data from src to dst
   struct cudaMemcpy3DParms copy_params = {0};
   assert(src->rank == 4 || t_src == 0);
   assert(dst->rank == 4 || t_dst == 0);
-  int rank = src->rank;
-  size_t pitch_src = src->size[rank - 1] * src->element_size;
-  size_t row_size_src = src->size[rank - 1] * src->element_size;
-  size_t ptr_offset_src = src->element_size * t_src * src->size[rank - 3] *
-                          src->size[rank - 2] * src->size[rank - 1];
-  size_t pitch_dst = dst->size[rank - 1] * dst->element_size;
-  size_t row_size_dst = dst->size[rank - 1] * dst->element_size;
-  size_t ptr_offset_dst = dst->element_size * t_dst * dst->size[rank - 3] *
-                          dst->size[rank - 2] * dst->size[rank - 1];
+  int srank = src->rank;
+  int drank = dst->rank;
 
-  char *src_ptr = (char *)select_ptr(src, kind == cudaMemcpyDeviceToHost);
 
-  char *dst_ptr = (char *)select_ptr(dst, kind == cudaMemcpyHostToDevice);
+  size_t pitch_src = src->size[srank - 1] * src->element_size;
+  size_t pitch_dst = dst->size[drank - 1] * dst->element_size;
+
+  // For Devito, the row size is also the pitch - we just
+  // copy all the padding to make it easier
+  size_t row_size_src = src->size[srank - 1] * src->element_size;
+  size_t row_size_dst = dst->size[drank - 1] * dst->element_size;
+
+  // Calculate pointer offsets in the fourth dimension
+  // since CUDA doesn't directly handle anything beyond the
+  // third dimension
+  size_t ptr_offset_src = src->element_size * t_src * src->size[srank - 3] *
+                          src->size[srank - 2] * src->size[srank - 1];
+  size_t ptr_offset_dst = dst->element_size * t_dst * dst->size[drank - 3] *
+                          dst->size[drank - 2] * dst->size[drank - 1];
+
+  char *src_ptr = reinterpret_cast<char *>(select_ptr(src, kind == cudaMemcpyDeviceToHost));
+  char *dst_ptr = reinterpret_cast<char *>(select_ptr(dst, kind == cudaMemcpyHostToDevice));
 
   copy_params.srcPtr = make_cudaPitchedPtr(src_ptr + ptr_offset_src, pitch_src,
-                                           row_size_src, src->size[rank - 2]);
+                                           row_size_src, src->size[srank - 2]);
   copy_params.srcPos = make_cudaPos(0, 0, 0);
+
   copy_params.dstPtr = make_cudaPitchedPtr(dst_ptr + ptr_offset_dst, pitch_dst,
-                                           row_size_dst, dst->size[rank - 2]);
+                                           row_size_dst, dst->size[drank - 2]);
   copy_params.dstPos = make_cudaPos(0, 0, 0);
+
+  // Copy the entire 3D slice
   copy_params.extent =
-      make_cudaExtent(src->element_size * (src->size[rank - 1]),
-                      src->size[rank - 2], src->size[rank - 3]);
+      make_cudaExtent(src->element_size * (src->size[srank - 1]),
+                      src->size[srank - 2], src->size[srank - 3]);
   // This may be used either for inbound or outbound copies
   copy_params.kind = kind;
   CudaChecked(cudaMemcpy3DAsync(&copy_params, stream));
@@ -386,6 +387,11 @@ std::pair<T1, T2> operator++(std::pair<T1, T2> &it) {
   return it;
 }
 } // namespace pair_iterators
+
+/* ========================================================================= */
+/*
+ * Bulk data object initialization / transfer / teardown
+ */
 
 template <typename TDataobj>
 static int async_d2h_destroy_many(std::initializer_list<TDataobj> dataobjs,

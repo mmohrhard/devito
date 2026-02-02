@@ -7,6 +7,7 @@
 #include <memory>
 #include <set>
 
+#include <devito/types.hpp>
 #include <devito/jitify.hpp>
 #include <devito/logging.hpp>
 #include <devito/errors.hpp>
