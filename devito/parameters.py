@@ -156,6 +156,7 @@ env_vars_mapper = {
     'DEVITO_LANGUAGE': 'language',
     'DEVITO_AUTOTUNING': 'autotuning',
     'DEVITO_LOGGING': 'log-level',
+    'DEVITO_OPERATOR_LOGGING': 'operator-log-level',
     'DEVITO_FIRST_TOUCH': 'first-touch',
     'DEVITO_JIT_BACKDOOR': 'jit-backdoor',
     'DEVITO_IGNORE_UNKNOWN_PARAMS': 'ignore-unknowns',

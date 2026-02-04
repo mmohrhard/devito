@@ -449,6 +449,8 @@ class CudaAllocator(MemoryAllocator):
             )
         elif self.type == CudaAllocationType.DEVICE:
             ret = self.lib.cudaMalloc(ctypes.byref(c_pointer), c_bytesize)
+            if ret == 0:
+                ret = self.lib.cudaMemset(c_pointer, 0, c_bytesize)
         elif self.type == CudaAllocationType.SHARED:
             ret = self.lib.cudaMallocManaged(
                 ctypes.byref(c_pointer), c_bytesize, CUDA_MEM_ATTACH_GLOBAL

@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <cuda_runtime.h>
+#include <devito/errors.hpp>
 
 namespace devito {
 namespace cuda {
@@ -85,6 +86,11 @@ select_ptr(T *obj, bool device) {
     assert(false && "Object does not have host_data member");
   }
 }
+
+// Upcoming savebuffer compression options
+SFINAE_FOR_MEMBER_CHECK(is_compressed, compressed);
+SFINAE_FOR_MEMBER_CHECK(compression_type, compression_type);
+SFINAE_FOR_MEMBER_CHECK(compression_buf, compression_buf);
 
 } // namespace cuda
 } // namespace devito

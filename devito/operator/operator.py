@@ -1,3 +1,4 @@
+from dugwave.logging import operator_logger
 from collections import OrderedDict, namedtuple
 from operator import attrgetter
 from math import ceil
@@ -11,7 +12,7 @@ from devito.arch.compiler import IntelCompiler
 from devito.data import default_allocator
 from devito.exceptions import InvalidOperator
 from devito.ir.iet.visitors import CGenOpenMP
-from devito.logger import operator_log, debug, info, perf, warning, is_log_enabled_for
+from devito.logger import operator_log, debug, info, perf, warning, is_log_enabled_for, logger_registry
 from devito.ir.equations import LoweredEq, lower_exprs
 from devito.ir.clusters import ClusterGroup, clusterize
 from devito.ir.iet import (Callable, CInterface, EntryFunction, FindSymbols, MetaCall,
@@ -731,6 +732,12 @@ class Operator(Callable):
             setLogHandler = self._lib.setLogHandler
             setLogHandler.argtypes = [ctypes.c_void_p]
             setLogHandler(operatorLogCallback)
+
+        if hasattr(self._lib, "setLogLevel"):
+            setLogLevel = self._lib.setLogLevel
+            setLogLevel.argtypes = [ctypes.c_int]
+            level = logger_registry[configuration['operator-log-level']]
+            setLogLevel(level)
 
     # Execution
 

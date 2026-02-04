@@ -21,7 +21,7 @@ namespace cuda {
  * @param args Format string arguments
  */
 template <typename... Args>
-void acquire_gil_and_raise_error(const std::string &format, Args... args) {
+__host__ void acquire_gil_and_raise_error(const std::string &format, Args... args) {
   std::string message = string_format(format, std::forward<Args>(args)...);
   critical(message);
 #ifndef OPERATOR_STANDALONE
@@ -36,7 +36,7 @@ void acquire_gil_and_raise_error(const std::string &format, Args... args) {
  * Check for pending CUDA errors, and raise a Python error
  * if one is found
  */
-inline bool _cudaChecked(cudaError_t err, const char *file, int line,
+__host__ inline bool _cudaChecked(cudaError_t err, const char *file, int line,
                          const char *extra = nullptr) {
   if (err != cudaSuccess) {
     acquire_gil_and_raise_error("!!! CUDA Error in operator: %s:%d %s%s", file,
@@ -53,7 +53,7 @@ inline bool _cudaChecked(cudaError_t err, const char *file, int line,
   return true;
 }
 
-inline bool _ncclChecked(ncclResult_t err, const char *file, int line,
+__host__ inline bool _ncclChecked(ncclResult_t err, const char *file, int line,
                          const char *extra = nullptr) {
   // We may need this if we switch to fully-async NCCL, but I'm not sure
   // what that actually buys us?
@@ -83,7 +83,7 @@ inline bool _ncclChecked(ncclResult_t err, const char *file, int line,
 
 #define CudaCheckLaunch(grid, block)                                           \
   _cudaCheckKernelLaunch(grid, block, __FILE__, __LINE__)
-inline void _cudaCheckKernelLaunch(dim3 grid, dim3 block, const char *file,
+__host__ inline void _cudaCheckKernelLaunch(dim3 grid, dim3 block, const char *file,
                                    int line) {
   cudaError_t err = cudaPeekAtLastError();
   if (err != cudaSuccess) {

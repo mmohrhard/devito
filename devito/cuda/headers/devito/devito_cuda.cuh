@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nvtx3/nvToolsExt.h"
+#include <atomic>
 #include <cmath>
 #include <cuda.h>
 #include <devito/jitify.hpp>
@@ -21,9 +22,34 @@
 #include <Python.h>
 #endif
 
-#ifndef STRINGIFY
-#define STRINGIFY(x) _stringify(x)
-#define _stringify(x) #x
+// Verbose flags for debugging purposes
+// #define DEVITO_CUDA_VERBOSE_KERNEL_LAUNCH
+// #define DEVITO_CUDA_VERBOSE_GATHER_SCATTER
+// #define DEVITO_CUDA_VERBOSE_SAVEBUFFER_COPIES
+
+#ifdef DEVITO_CUDA_PLEASE_SPAM_MY_LOGS
+#ifndef DEVITO_CUDA_VERBOSE_KERNEL_LAUNCH
+#define DEVITO_CUDA_VERBOSE_KERNEL_LAUNCH
+#endif
+#ifndef DEVITO_CUDA_VERBOSE_GATHER_SCATTER
+#define DEVITO_CUDA_VERBOSE_GATHER_SCATTER
+#endif
+#ifndef DEVITO_CUDA_VERBOSE_SAVEBUFFER_COPIES
+#define DEVITO_CUDA_VERBOSE_SAVEBUFFER_COPIES
+#endif
+#ifndef DEVITO_CUDA_VERBOSE_MPI_REGIONS
+#define DEVITO_CUDA_VERBOSE_MPI_REGIONS
+#endif
+#endif
+
+#include <devito/errors.hpp>
+#include <devito/kernels.hpp>
+#include <devito/logging.hpp>
+#include <devito/memory.hpp>
+#include <devito/profiling.hpp>
+#include <devito/types.hpp>
+#ifdef MPI_VERSION
+#include <devito/mpi.hpp>
 #endif
 
 #ifndef NVRTC_CUDA_ARCH
@@ -45,14 +71,6 @@
    DEBUG_OPTS "--gpu-architecture=" STRINGIFY(NVRTC_CUDA_ARCH),                \
    "--std=c++11"}
 
-#include <devito/errors.hpp>
-#include <devito/kernels.hpp>
-#include <devito/logging.hpp>
-#include <devito/memory.hpp>
-#include <devito/mpi.hpp>
-#include <devito/profiling.hpp>
-#include <devito/types.hpp>
-
 /**
  * Thread-local temporary variable helpers
  */
@@ -69,9 +87,9 @@
             SIZE, device);                                                     \
       CudaChecked(cudaMallocAsync((void **)&NAME##_device[device], (SIZE),     \
                                   kernel_stream));                             \
-      CudaChecked(                                                             \
-          cudaMemsetAsync(NAME##_device[device], 0, (SIZE), kernel_stream));   \
     }                                                                          \
+    CudaChecked(                                                               \
+        cudaMemsetAsync(NAME##_device[device], 0, (SIZE), kernel_stream));     \
     NAME = NAME##_device[device];                                              \
   }
 
@@ -92,7 +110,7 @@
   {                                                                            \
     if (devito::cuda::_allocTempArray<DTYPE>(                                  \
             &NAME##_device[devito::cuda::_cudaGetCurrentDevice()],             \
-            STRINGIFY(NAME), {__VA_ARGS__}) != 0)                              \
+            STRINGIFY(NAME), kernel_stream, {__VA_ARGS__}) != 0)               \
       return -1;                                                               \
     NAME = NAME##_device[devito::cuda::_cudaGetCurrentDevice()];               \
   }

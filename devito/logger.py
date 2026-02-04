@@ -10,7 +10,7 @@ __all__ = ('set_log_level', 'set_log_noperf', 'is_log_enabled_for',
 
 
 logger = logging.getLogger('Devito')
-operator_logger = logger.getChild('operator')
+operator_logger = logging.getLogger('Devito.Operator')
 
 stream_handler = logging.StreamHandler()
 
@@ -50,13 +50,14 @@ COLORS = {
 
 SHOULD_EXPLAIN_OPTS = False
 
-def _set_log_level(level):
+def _set_log_level(level, logger):
     """
     Set the level of the Devito logger.
     """
     if level not in logger_registry:
         raise ValueError("Illegal logging level %s" % level)
-
+    if isinstance(level, str):
+        level = logger_registry[level]
     logger.setLevel(level)
 
 

@@ -1,24 +1,22 @@
 #ifndef _DEVITO_CUDA_KERNELS_H
 #define _DEVITO_CUDA_KERNELS_H
 
-#include <cuda_runtime.h>
 #include <cstddef>
+#include <cuda_runtime.h>
 #include <map>
 #include <memory>
 #include <set>
 
-#include <devito/types.hpp>
+#include <devito/errors.hpp>
 #include <devito/jitify.hpp>
 #include <devito/logging.hpp>
-#include <devito/errors.hpp>
+#include <devito/types.hpp>
 #include <devito/util.hpp>
-
 
 using tuned_kernel = std::pair<dim3, dim3>;
 
 typedef std::map<std::shared_ptr<jitify::detail::CUDAKernel>, tuned_kernel>
     tuningDict;
-
 
 namespace devito {
 namespace cuda {
@@ -27,7 +25,7 @@ template <typename... Args>
 inline int _launchKernel(const char *file, int line, const char *kname,
                          jitify::KernelInstantiation &kernel,
                          std::tuple<dim3, dim3> tune, cudaStream_t stream,
-                         dim3 mins, dim3 maxs, Args... args) {
+                         int3 mins, int3 maxs, Args... args) {
   dim3 threads = std::get<0>(tune);
   dim3 tb = dim3(threads.x * threads.y * threads.z);
   dim3 threads_sub = std::get<1>(tune);
@@ -39,12 +37,44 @@ inline int _launchKernel(const char *file, int line, const char *kname,
                         (mins.y / block_sizes.y) * block_sizes.y,
                         (mins.z / block_sizes.z) * block_sizes.z);
 
-  // Resize the grid based on the block sizes and offsets
-  dim3 grid(ceil_div(maxs.x - block_min.x, block_sizes.x),
-            ceil_div(maxs.y - block_min.y, block_sizes.y),
-            ceil_div(maxs.z - block_min.z, block_sizes.z));
+  // Compute the overall (pessimistic) range we need to cover
+  int3 range =
+      int3(maxs.x - mins.x + 1, maxs.y - mins.y + 1, maxs.z - mins.z + 1);
 
-  if (grid.x >= 1 && grid.y >= 1 && grid.z >= 1) {
+  // CHeck if there's even any work to do
+  bool skip = (range.x <= 0 || range.y <= 0 || range.z <= 0);
+
+  // Get the grid in terms of blocks (which we'll offset by block_min in the
+  // kernels)
+  dim3 grid(ceil_div((unsigned int)range.x, block_sizes.x),
+            ceil_div((unsigned int)range.y, block_sizes.y),
+            ceil_div((unsigned int)range.z, block_sizes.z));
+
+#ifdef DEVITO_CUDA_VERBOSE_KERNEL_LAUNCH
+  dim3 waste =
+      dim3(grid.x * block_sizes.x - range.x, grid.y * block_sizes.y - range.y,
+           grid.z * block_sizes.z - range.z);
+  size_t total_threads =
+      grid.x * threads.x * grid.y * threads.y * grid.z * threads.z;
+  size_t expected_threads = std::max(1u, range.x / threads_sub.x) *
+                            std::max(1u, range.y / threads_sub.y) *
+                            std::max(1u, range.z / threads_sub.z);
+  float wastage = 100.0 * ((float)(total_threads - expected_threads) /
+                           (float)total_threads);
+  debug("%s%s: threads=[%lu, %lu, %lu] block=[%lu, %lu, %lu], "
+        "mins=[%ld, %ld, %ld], maxs=[%ld, %ld, %ld] "
+        "blockmin=[%lu, %lu, %lu] grid(block)=[%lu, %lu, %lu] "
+        "grid(thread)=[%lu, %lu, %lu] "
+        "ideal(thread)=[%ld, %ld, %ld] "
+        "waste=[%lu, %lu, %lu] (%.2f%%)",
+        kname, skip ? " [SKIPPED]" : "", threads.x, threads.y, threads.z,
+        block_sizes.x, block_sizes.y, block_sizes.z, mins.x, mins.y, mins.z,
+        maxs.x, maxs.y, maxs.z, block_min.x, block_min.y, block_min.z, grid.x,
+        grid.y, grid.z, grid.x * block_sizes.x, grid.y * block_sizes.y,
+        grid.z * block_sizes.z, range.x, range.y, range.z, waste.x, waste.y,
+        waste.z, wastage);
+#endif
+  if (!skip) {
     if (!_cudaChecked(
             (cudaError_t)(kernel.configure(grid, tb, 0, stream)
                               .launch(block_min, std::forward<Args>(args)...)),
@@ -55,7 +85,6 @@ inline int _launchKernel(const char *file, int line, const char *kname,
 
   return 0;
 }
-
 
 #define setupGrid(GRID, TB, THREAD, X, Y, Z)                                   \
   _setupGrid(#GRID, GRID, TB, THREAD, X, Y, Z)
@@ -318,6 +347,7 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   float best_eff = _occupancyForKernel(cf, preferred);
   debug("base occupancy is %.2f", best_eff);
   if (best_eff > 0.66) {
+    debug("base occupancy %.2f is good enough, skipping tuning", best_eff);
     std::lock_guard<std::mutex> lock(kernel_compile_mutex);
     tuning[kernel_ptr] = result;
     nvtxRangePop();

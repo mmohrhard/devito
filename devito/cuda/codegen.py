@@ -390,8 +390,8 @@ class MultilineCudaCall(c.Generable):
         self._preferred_sub_block = preferred_sub_block
 
     def generate(self, with_semicolon=True) -> Iterator[str]:
-        mins = [1, 1, 1]
-        maxs = [1, 1, 1]
+        mins = [0, 0, 0]
+        maxs = [0, 0, 0]
         threads = [1, 1, 1]
         for i in range(0, len(self.mins)):
             expr = str(self.maxs[-1 - i])
@@ -401,7 +401,7 @@ class MultilineCudaCall(c.Generable):
 
             mins[i] = str(self.mins[-1 - i])
             threads[i] = self.threads[i]
-        tip = "launchKernel(%s, %s, dim3(%s), dim3(%s),  " % (
+        tip = "launchKernel(%s, %s, devito::cuda::int3(%s), devito::cuda::int3(%s),  " % (
             self.name,
             (self.stream if self.stream is not None else "cudaStreamDefault"),
             ",".join(str(i) for i in mins),

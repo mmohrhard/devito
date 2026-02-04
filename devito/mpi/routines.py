@@ -43,7 +43,7 @@ from devito.tools import (
     dtype_to_ctype,
     dtype_to_mpitype,
     flatten,
-    generator,
+    generator, as_tuple,
 )
 from devito.types import Array, CompositeObject, Dimension, Eq, LocalObject, Symbol
 
@@ -1050,15 +1050,18 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
         halos_by_peers = dict()
         for i, (f, hse) in enumerate(hs.fmapper.items()):
             msg = self._msgs[(f, hse)]
-            if msg.npeers not in halos_by_peers:
-                halos_by_peers[msg.npeers] = []
-            halos_by_peers[msg.npeers].append((f, hse, msg))
+            key = (msg.npeers, as_tuple(hse.loc_indices.values()))
+            v = halos_by_peers.setdefault(key, [])
+
+            v.append((f, hse, msg))
+            halos_by_peers[key] = v
 
         preactions = []
         body = []
         postactions = []
 
-        for npeers, fes in halos_by_peers.items():
+        for key, fes in halos_by_peers.items():
+            npeers, indices = key
             funcs = []
             msgs = []
             hses = []
@@ -1070,14 +1073,13 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
             preactions.append(
                 Checked(
                     Call(
-                        "devito::cuda::async_multi_haloupdate<dataobj *, msg *>",
+                        "devito::cuda::async_multi_haloupdate<dataobj *, msg *, %s>" % (npeers, ),
                         [
                             BraceInitializedList(elements=funcs),
                             BraceInitializedList(elements=msgs),
                         ]
-                        + list(hses[0].loc_indices.values())
+                        + list(indices)
                         + [
-                            npeers,
                             NcclStream(),
                             KernelStream(),
                             funcs[0].grid.distributor._obj_nccl,
@@ -1089,14 +1091,13 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
             postactions.append(
                 Checked(
                     Call(
-                        "devito::cuda::async_multi_halowait<dataobj *, msg *>",
+                        "devito::cuda::async_multi_halowait<dataobj *, msg *, %s>" % (npeers, ),
                         [
                             BraceInitializedList(elements=funcs),
                             BraceInitializedList(elements=msgs),
                         ]
                         + list(hses[0].loc_indices.values())
                         + [
-                            npeers,
                             NcclStream(),
                             KernelStream(),
                             funcs[0].grid.distributor._obj_nccl,
@@ -1123,9 +1124,10 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
                 i: List(body=[i]) for i in FindNodes(ExpressionBundle).visit(hs.body)
             }
             iet = List(body=[Transformer(mapper).visit(hs.body)])
+            name = "compute%d" % key
             return ElementalFunction(
-                "compute%d" % key,
-                [iet, c.Statement("return cudaSuccess")],
+                name,
+                [Call("LOG_COMPUTE", [name]), iet, c.Statement("return cudaSuccess")],
                 "int",
                 derive_parameters(iet),
                 "static",
@@ -1205,9 +1207,11 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
         # The -1 below is because an Iteration, by default, generates <=
         iet = Iteration(iet, dim, region.nregions - 1)
 
-        body = List(body=[iet, c.Statement("return 0")])
+        name = "remainder%d" % key
+
+        body = List(body=[Call("LOG_REMAINDER", [name, region.nregions, region]), iet, c.Statement("return 0")])
         return ElementalFunction(
-            "remainder%d" % key, body, "int", derive_parameters(iet), "static"
+            name, body, "int", derive_parameters(iet), "static"
         )
 
     def _call_remainder(self, remainder):

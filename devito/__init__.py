@@ -42,7 +42,7 @@ from devito.mpi import MPI  # noqa
 # Imports required to initialize Devito
 from devito.arch import compiler_registry, platform_registry
 from devito.core import *   # noqa
-from devito.logger import logger_registry, _set_log_level  # noqa
+from devito.logger import logger_registry,  logger, operator_logger, _set_log_level  # noqa
 from devito.mpi.routines import mpi_registry
 from devito.operator import profiler_registry, operator_registry
 
@@ -85,7 +85,11 @@ configuration.add('ignore-unknowns', 0, [0, 1], preprocessor=bool, impacts_jit=F
 
 # Setup log level
 configuration.add('log-level', 'INFO', list(logger_registry),
-                  callback=lambda i: i, impacts_jit=False)
+    callback=lambda i: i, impacts_jit=False)
+
+# Setup log level for operator code
+configuration.add('operator-log-level', 'INFO', list(logger_registry),
+    callback=lambda i: _set_log_level(i, operator_logger), impacts_jit=False)
 
 # Escape hatch for custom kernels. The typical use case is as follows: one lets
 # Devito generate code for an Operator; then, once the session is over, the

@@ -1,34 +1,9 @@
+from devito.symbolics import uxreplace, search
+from collections import OrderedDict
 from typing import Iterable
+
 import cgen as c
 import sympy
-
-from collections import OrderedDict
-
-from devito.cuda.types import CudaEvent, NullPointer
-from devito.ir.iet.efunc import EntryFunction
-from devito.ir.iet.nodes import (
-    BlankLine,
-    Block,
-    Call,
-    Callable,
-    Definition,
-    List,
-    SyncSpot,
-)
-from devito.ir.iet.utils import derive_parameters
-from devito.ir.iet.visitors import FindNodes, Transformer, Uxreplace
-from devito.ir.support.properties import AFFINE, PARALLEL
-from devito.ir.support.syncs import (
-    FetchUpdate,
-    PrefetchUpdate,
-    ReleaseLock,
-    WaitLock,
-    WithLock,
-)
-from devito.passes.iet.engine import iet_pass
-from devito.passes.iet.orchestration import Orchestrator
-from devito.symbolics.printer import ccode
-from devito.tools.utils import as_mapper, as_tuple, filter_ordered, flatten
 
 from devito.cuda.lang import CudaBB
 from devito.cuda.nodes import (
@@ -39,6 +14,30 @@ from devito.cuda.nodes import (
     KernelStream,
     MemCopyStream,
 )
+from devito.cuda.types import CudaEvent, NullPointer
+from devito.ir.iet.efunc import EntryFunction
+from devito.ir.iet.nodes import (
+    BlankLine,
+    Block,
+    Call,
+    Definition,
+    List,
+    SyncSpot,
+)
+from devito.ir.iet.visitors import FindNodes, Transformer, Uxreplace
+from devito.ir.support.properties import AFFINE, PARALLEL
+from devito.ir.support.syncs import (
+    FetchUpdate,
+    PrefetchUpdate,
+    ReleaseLock,
+    WaitLock,
+    WithLock,
+)
+from devito.logger import debug
+from devito.passes.iet.engine import iet_pass
+from devito.passes.iet.orchestration import Orchestrator
+from devito.symbolics.printer import ccode
+from devito.tools.utils import as_mapper, filter_ordered
 
 __all__ = ["CudaOrchestrator"]
 
@@ -101,22 +100,25 @@ class CudaOrchestrator(Orchestrator):
         return iet, efuncs
 
     def _make_fetchupdate(self, iet, sync_ops):
-        postactions = [self.lang._map_update_device(s.target, s.imask) for s in sync_ops]
-
-        # Turn init IET into a Callable
-        name = self.sregistry.make_name(prefix="init_device")
-        body = List(body=iet.body + tuple(postactions))
-        parameters = derive_parameters(body)
-        efunc = Callable(name, body, "void", parameters, "static")
-
-        # Perform initial fetch by the main thread
-        iet = List(
-            header=c.Comment("Initialize data stream"), body=Call(name, parameters)
+        copy = _make_multidimensional_async_copy(
+            iet.body, CudaTransferDirection.H2D, self._kernel_stream, dim=sync_ops[0].dim
         )
 
-        return iet, [efunc]
+        # Perform initial fetch by the main thread
+        iet = List(header=c.Comment("Initialize data stream"), body=copy)
+
+        return iet, []
 
     def _make_prefetchupdate(self, iet, sync_ops):
+        for op in sync_ops:
+            debug(
+                "copy %s to %s, size %s, dim %s, tstore %s",
+                op.function,
+                op.target,
+                op.size,
+                op.dim,
+                op.tstore,
+            )
         preactions = []
         preactions.extend(
             [self.lang._map_fire_event(s, stream=self._kernel_stream) for s in sync_ops]
@@ -308,7 +310,7 @@ def gather_multidimensional_memcpy(iet) -> list[tuple]:
 
         return dims, exprs
 
-    if iet.is_Iteration and all(p in iet.properties for p in [AFFINE, PARALLEL]):
+    if iet.is_Iteration and all(p in iet.properties for p in [PARALLEL]):
         dims.append((iet.dimensions, iet.limits))
         sub_dims, sub_exprs = gather_multidimensional_memcpy(iet.children)
         dims.extend(sub_dims)
@@ -321,172 +323,61 @@ def gather_multidimensional_memcpy(iet) -> list[tuple]:
     return dims, exprs
 
 
-def _make_multidimensional_async_copy(iet, direction, stream) -> list[Block]:
+# Search for expressions of the form "x % 1", which can be replaced with a literal 0
+def q_mod_can_elide(expr):
+    if isinstance(expr, sympy.Mod) and expr.args[1] == 1:
+        return True
+
+
+def _make_multidimensional_async_copy(iet, direction, stream, dim=None) -> list[Block]:
     dims, exprs = gather_multidimensional_memcpy(iet)
 
     ret = []
+    debug("examined iet %s" % str(iet))
+    debug("found %d expressions for multidimensional async copy" % len(exprs))
 
+    mapper = {}
+    if dim is not None:
+        # if this dimension has zero size, replace it with zero in all expressions
+        if dim.symbolic_min == dim.symbolic_max:
+            mapper = {dim: sympy.Integer(0)}
+
+    mods = search(exprs, q_mod_can_elide, "all", "dfs")
+    for mod in mods:
+        mapper[mod] = sympy.Integer(0)
+        debug("eliding modulo operation %s" % str(mod))
+
+    for k, v in mapper.items():
+        debug("replacing %s with %s" % (str(k), str(v)))
+    if len(mapper) > 0:
+        new_exprs = []
+        for expr in exprs:
+            new_exprs.append(uxreplace(expr, mapper))
+
+        exprs = new_exprs
+
+    debug("found %d expressions for multidimensional async copy" % len(exprs))
     for expr in exprs:
         src = expr.rhs
         dst = expr.lhs
 
-        d = flatten(x[0] for x in dims)
-        iteration_dimensions = list(x for x in d if not x.is_Derived)
-        iterators = list(x for x in d if x.is_Derived)
-
-        src_non_iterated_dimensions = [
-            x
-            for x in src.function.dimensions
-            if x not in iteration_dimensions and x not in iterators
-        ]
-        dst_non_iterated_dimensions = [
-            x
-            for x in dst.function.dimensions
-            if x not in iteration_dimensions and x not in iterators
-        ]
-
         src_storage = CudaStorage(src.function)
         dst_storage = CudaStorage(dst.function)
 
-        src_strides = [
-            sympy.Mul(
-                *(
-                    src.function.symbolic_shape[i + 1 :]
-                    if i < len(src.indices) - 1
-                    else [1]
-                )
-            )
-            for i in range(len(src.indices))
-        ]
-        src_offset = sympy.Add(
-            *[
-                sympy.Mul(src_strides[i], src.indices[i])
-                for i in range(len(src.indices))
-                if src.function.dimensions[i] in src_non_iterated_dimensions
-            ]
-        )
-        src_ptr = (
-            src_storage.host_storage
-            if direction == CudaTransferDirection.H2D
-            else src_storage.device_storage
+        call = Call(
+            "devito::cuda::async_buffer_copy_slice",
+            [
+                dst_storage.function._C_name,
+                src_storage.function._C_name,
+                dst.indices[-4] if len(dst.indices) >= 4 else 0,
+                src.indices[-4] if len(src.indices) >= 4 else 0,
+                "cudaMemcpyHostToDevice"
+                if direction == CudaTransferDirection.H2D
+                else "cudaMemcpyDeviceToHost",
+                ccode(stream),
+            ],
         )
 
-        src_ptr = "&((float *)(%s))[%s]" % (src_ptr, ccode(src_offset))
-        src_pitch = "sizeof(float) * (%s)" % ccode(src.function.symbolic_shape[-1])
-        src_pos = "make_cudaPos(sizeof(float) * (%s), (%s), (%s))" % (
-            as_tuple(
-                [
-                    (
-                        ccode(
-                            dims[-i][1][0]
-                            + (
-                                (src.indices[-i] - iterators[-i])
-                                if len(iterators) > (i - 1)
-                                else 0
-                            )
-                            - src.function.dimensions[-i].symbolic_min
-                        )
-                        if len(dims) >= i
-                        else "0"
-                    )
-                    for i in range(1, 4)
-                ]
-            )
-        )
-
-        src_x = ccode(src.function.symbolic_shape[-1])
-        src_y = ccode(src.function.symbolic_shape[-2])
-
-        dst_ptr = (
-            dst_storage.device_storage
-            if direction == CudaTransferDirection.H2D
-            else dst_storage.host_storage
-        )
-
-        dst_strides = [
-            sympy.Mul(
-                *(
-                    dst.function.symbolic_shape[i + 1 :]
-                    if i < len(dst.indices) - 1
-                    else [1]
-                )
-            )
-            for i in range(len(dst.indices))
-        ]
-        dst_offset = sympy.Add(
-            *[
-                sympy.Mul(dst_strides[i], dst.indices[i])
-                for i in range(len(dst.indices))
-                if dst.function.dimensions[i] in dst_non_iterated_dimensions
-            ]
-        )
-
-        dst_ptr = "&((float *)(%s))[%s]" % (
-            dst_ptr,
-            ccode(dst_offset),
-        )
-        dst_pitch = "sizeof(float) * (%s)" % ccode(dst.function.symbolic_shape[-1])
-        dst_pos = "make_cudaPos(sizeof(float) * (%s), (%s), (%s))" % (
-            as_tuple(
-                [
-                    (
-                        ccode(
-                            dims[-i][1][0]
-                            + (
-                                (dst.indices[-i] - iterators[-i])
-                                if len(iterators) > (i - 1)
-                                else 0
-                            )
-                            - dst.function.dimensions[-i].symbolic_min
-                        )
-                        if len(dims) >= i
-                        else "0"
-                    )
-                    for i in range(1, 4)
-                ]
-            )
-        )
-
-        dst_x = ccode(dst.function.symbolic_shape[-1])
-        dst_y = ccode(dst.function.symbolic_shape[-2])
-
-        assert len(dims) <= max(
-            len(src.function.dimensions), len(dst.function.dimensions)
-        )
-
-        extent = "make_cudaExtent(sizeof(float) * (%s), %s, %s)" % (
-            ccode(dims[-1][1][1] - dims[-1][1][0]),
-            (
-                ("(" + ccode(dims[-2][1][1] - dims[-2][1][0]) + ")")
-                if len(dims) >= 2
-                else "1"
-            ),
-            (
-                ("(" + ccode(dims[-3][1][1] - dims[-3][1][0]) + ")")
-                if len(dims) >= 3
-                else "1"
-            ),
-        )
-
-        ops = [
-            c.Statement("struct cudaMemcpy3DParms copy_params = {0}"),
-            c.Statement(
-                "copy_params.srcPtr = make_cudaPitchedPtr(%s, %s, %s, %s)"
-                % (src_ptr, src_pitch, src_x, src_y)
-            ),
-            c.Statement("copy_params.srcPos = %s" % src_pos),
-            c.Statement(
-                "copy_params.dstPtr = make_cudaPitchedPtr(%s, %s, %s, %s)"
-                % (dst_ptr, dst_pitch, dst_x, dst_y)
-            ),
-            c.Statement("copy_params.dstPos = %s" % dst_pos),
-            c.Statement("copy_params.extent = %s" % extent),
-            c.Statement("copy_params.kind = cudaMemcpyDefault"),
-            c.Statement(
-                "CudaChecked(cudaMemcpy3DAsync(&copy_params, %s))" % ccode(stream)
-            ),
-        ]
-
-        ret.append(Block(body=ops))
+        ret.append(call)
 
     return ret

@@ -5,6 +5,12 @@
 #include <memory>
 #include <stdexcept>
 
+
+#ifndef STRINGIFY
+#define STRINGIFY(x) _stringify(x)
+#define _stringify(x) #x
+#endif
+
 /**
  * LOGGING
  */
@@ -23,9 +29,14 @@ enum LogLevel {
 typedef void (*LogHandler)(int logLevel, const char *message);
 
 LogHandler _logHandler = nullptr;
+LogLevel _minLogLevel = LogLevel::DEBUG;
 
 extern "C" void setLogHandler(void *handler) {
   _logHandler = (LogHandler)handler;
+}
+
+extern "C" void setLogLevel(int logLevel) {
+    _minLogLevel = (LogLevel)logLevel;
 }
 
 template <typename... Args>
@@ -44,10 +55,11 @@ std::string string_format(const std::string &format, Args... args) {
 
 template <typename... Args>
 inline void log(int logLevel, const std::string &format, Args... args) {
+  if (_logHandler == nullptr || logLevel < _minLogLevel)
+    return;
+
   std::string message = string_format(format, std::forward<Args>(args)...);
 
-  if (_logHandler == nullptr)
-    return;
   _logHandler(logLevel, message.c_str());
 }
 
@@ -71,5 +83,17 @@ inline void critical(const std::string &format, Args... args) {
   log(LogLevel::CRITICAL, format, std::forward<Args>(args)...);
 }
 
+#ifdef DEVITO_CUDA_VERBOSE_MPI_REGIONS
+#define LOG_COMPUTE(NAME, ...) { \
+    debug("compute %s", STRINGIFY(NAME)); \
+}
+
+#define LOG_REMAINDER(NAME, NREGIONS, ...) { \
+    debug("remainder %s with %d regions", STRINGIFY(NAME), NREGIONS); \
+}
+#else
+#define LOG_COMPUTE(...) {}
+#define LOG_REMAINDER(...) {}
+#endif
 
 #endif // _DEVITO_CUDA_LOGGING_H

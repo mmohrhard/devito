@@ -318,7 +318,7 @@ class DeviceCudaizer(PragmaDeviceAwareTransformer):
                         dim_vars[dv],
                         dim_vars[dv],
                         (" * _sub_block_" + dim_vars[dv] + " " if has_sub_block else ""),
-                        "_offsets." + dim_vars[v],
+                        "_offsets." + dim_vars[dv],
                         l_idx,
                     ),
                 )
