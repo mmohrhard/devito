@@ -14,9 +14,18 @@ namespace devito {
 namespace cuda {
 
 template <typename T> int _freeTempArrayData(T *array) {
+  // Set to nullptr because we may be re-using the array struct
   CudaChecked(cudaFree(array->device_data));
-  CudaChecked(cudaFreeHost(array->data));
+  array->device_data = nullptr;
+
+  if (array->data != nullptr) {
+    CudaChecked(cudaFreeHost(array->data));
+    array->data = nullptr;
+  }
+
   CudaChecked(cudaFreeHost(array->size));
+  array->size = nullptr;
+
   return 0;
 }
 
@@ -62,7 +71,20 @@ inline int _allocTempArray(T **array_ptr, const char *name, cudaStream_t stream,
           array->nbytes > 0 ? "re" : "", nb, name, device);
     if (_freeTempArrayData(array) != 0)
       return -1;
+
+    // The majority of our use cases for these temporary arrays are savebuffers
+    // and with the current CUDA buffering pass, the host buffer usually doesn't
+    // need to exist; let's avoid it so we don't have to pay the cost of
+    // allocating anywhere up to 20-30 gigs of page-locked host memory
+    // on every operator invocation - it's slow and annoying. Device
+    // allocations, by contrast, are fairly fast when you're not otherwise
+    // running kernels on the GPU.
+    //
+    // It's here behind a flag in case we start using operators
+    // that actually do need it.
+#ifdef DEVITO_CUDA_ARRAY_TEMP_NEEDS_HOST_MEMORY
     CudaChecked(cudaMallocHost((void **)(&array->data), nb));
+#endif
     CudaChecked(cudaMalloc((void **)(&array->device_data), nb));
     CudaChecked(
         cudaMallocHost((void **)(&array->size), sizeof(size_t) * array->rank));
