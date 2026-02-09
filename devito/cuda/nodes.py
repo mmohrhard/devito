@@ -409,6 +409,7 @@ class CudaTunedKernel(Scalar):
     def __init__(cls, name):
         super().__init__(name=name, dtype=c.c_void_p)
 
+    @property
     def _C_typename(self):
         return "KernelInstantiation&"
 

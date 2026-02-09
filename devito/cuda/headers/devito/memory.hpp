@@ -547,7 +547,7 @@ static int async_h2d_prepare_many(std::initializer_list<TDataobj> dataobjs,
     nvtxRangePop();
   }
   nvtxRangePop();
-  return 0;
+  return ret;
 }
 
 } // namespace cuda

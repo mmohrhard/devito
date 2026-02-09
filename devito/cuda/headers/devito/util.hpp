@@ -9,9 +9,9 @@ namespace devito {
 namespace cuda {
 
 inline uint64_t next_pow2(uint64_t x) {
-  return (__builtin_popcount(x) == 1 || x == 1)
+  return (__builtin_popcountll(x) == 1 || x == 1)
              ? x
-             : 1 << (64 - __builtin_clzl(x - 1));
+             : 1ULL << (64 - __builtin_clzll(x - 1));
 }
 
 static inline int ceil_div(int x, int y) { return (x + y - 1) / y; }

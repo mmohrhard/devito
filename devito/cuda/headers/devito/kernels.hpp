@@ -99,7 +99,7 @@ inline int _launchKernel(const char *file, int line, const char *kname,
 // Not perfect, but it'll do for now
 inline void _setupGrid(const char *gridName, dim3 &grid, dim3 &cudaTb,
                        dim3 &threadBlock, int x_size, int y_size, int z_size) {
-  if (threadBlock.x == threadBlock.y == threadBlock.z == 1) {
+  if (threadBlock.x == 1 && threadBlock.y == 1 && threadBlock.z == 1) {
     if (z_size > 128) {
       threadBlock = dim3(1, 1, 64);
     } else if (z_size > 64) {
@@ -143,7 +143,7 @@ static float _occupancyForKernel(CUfunction &k, const dim3 &block) {
   cudaDeviceGetAttribute(&max_sm_registers,
                          cudaDevAttrMaxRegistersPerMultiprocessor, device);
   cudaDeviceGetAttribute(&max_block_registers,
-                         cudaDevAttrMaxRegistersPerMultiprocessor, device);
+                         cudaDevAttrMaxRegistersPerBlock, device);
 
   int regs;
   cuFuncGetAttribute(&regs, CU_FUNC_ATTRIBUTE_NUM_REGS, k);
@@ -330,7 +330,7 @@ performTuning(tuningDict &tuning, const char *name, dim3 preferred,
   bool has_small_dims = false;
   for (int d = 0; d < max_block_dimension; d++) {
     int dv = dim3_get(expected_grid, d);
-    if (dv < 32 || ((dv % 32) / dv) > 0.75) {
+    if (dv < 32 || ((float)(dv % 32) / (float)dv) > 0.75f) {
       small_dims[d] = true;
       has_small_dims = true;
     }

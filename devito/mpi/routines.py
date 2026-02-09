@@ -1025,8 +1025,8 @@ class NcclOverlapHaloExchangeBuilder(BasicHaloExchangeBuilder):
             try:
                 msg = self._msgs[(f, hse)]
             except KeyError:
-                key = self._gen_msgkey()
-                msg = self._msgs.setdefault((f, hse), self._make_msg(f, hse, key))
+                msg_key = self._gen_msgkey()
+                msg = self._msgs.setdefault((f, hse), self._make_msg(f, hse, msg_key))
 
             # Callables for send/recv/wait
             # mapper[(f, hse)] = self._make_all(f, hse, msg)

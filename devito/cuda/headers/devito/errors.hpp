@@ -23,11 +23,11 @@ namespace cuda {
 template <typename... Args>
 __host__ void acquire_gil_and_raise_error(const std::string &format, Args... args) {
   std::string message = string_format(format, std::forward<Args>(args)...);
-  critical(message);
+  critical("%s", message.c_str());
 #ifndef OPERATOR_STANDALONE
   PyGILState_STATE gstate;
   gstate = PyGILState_Ensure();
-  PyErr_Format(PyExc_RuntimeError, message.c_str());
+  PyErr_Format(PyExc_RuntimeError, "%s", message.c_str());
   PyGILState_Release(gstate);
 #endif
 }
